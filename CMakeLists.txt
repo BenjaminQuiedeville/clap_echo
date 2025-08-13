@@ -11,17 +11,15 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-set(imgui_dir W:/libs/imgui)
-
 set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES FALSE CACHE BOOL "Download Dependencies")
 set(VST3_SDK_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../libs/vst3sdk)
 set(CLAP_SDK_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../clap)
-set(CLAP_VST3_TUID_STRING "ctnh")
+set(CLAP_VST3_TUID_STRING "cech")
 
 
 add_library(${PROJECT_NAME}_static STATIC plugin.cpp)
 
-target_include_directories(${PROJECT_NAME}_static PRIVATE ${imgui_dir} ${CLAP_SDK_ROOT}/include)
+target_include_directories(${PROJECT_NAME}_static PRIVATE imgui ${CLAP_SDK_ROOT}/include)
 
 target_link_libraries(${PROJECT_NAME}_static PRIVATE opengl32.lib)
 

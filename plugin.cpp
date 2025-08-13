@@ -10,13 +10,13 @@
 
 #include <clap/clap.h>
 
-#include <imgui.cpp>
-#include <imgui_draw.cpp>
-#include <imgui_widgets.cpp>
-#include <imgui_tables.cpp>
+#include "imgui/imgui.cpp"
+#include "imgui/imgui_draw.cpp"
+#include "imgui/imgui_widgets.cpp"
+#include "imgui/imgui_tables.cpp"
 
-#include <backends/imgui_impl_win32.cpp>
-#include <backends/imgui_impl_opengl3.cpp>
+#include "imgui/backends/imgui_impl_win32.cpp"
+#include "imgui/backends/imgui_impl_opengl3.cpp"
 
 typedef uint32_t u32;
 typedef int32_t i32;
@@ -230,14 +230,21 @@ bool param_convert_value_to_text(const clap_plugin_t *_plugin, clap_id id, doubl
     u32 param_index = (u32) id;
     
     switch (param_index) {
-        case Gain: {
+        case Time: {
+            snprintf(display, size, "%f ms", value);
+            return true;
+        } 
+        case ModAmount:
+        case Feedback:
+        case Mix: {
             snprintf(display, size, "%f", value);
             return true;
-        }
-        case Volume: {
-            snprintf(display, size, "%f dB", value);
+        } 
+        case ToneFreq:
+        case ModFreq: {
+            snprintf(display, size, "%f Hz", value);
             return true;
-        }
+        } 
         case NParams:
         default: {
             return false;
@@ -344,27 +351,6 @@ static void CleanupDeviceWGL(GUI *gui) {
     ::ReleaseDC(gui->window, gui->device_context);
 }
 
-static void PluginPain(MyPlugin *plugin, u32 *bits) {
-
-}
-
-static void PluginProcessMouseDrag(MyPlugin *plugin, i32 x, i32 y) {
-
-}
-
-static void PluginProcessMousePress(MyPlugin *plugin, i32 x, i32 y) {
-
-}
-
-static void PluginProcessMouseRelease(MyPlugin *plugin) {
-
-}
-
-
-static void GUIPaint(MyPlugin *plugin, bool internal) {
-    RedrawWindow(plugin->gui.window, 0, 0, RDW_INVALIDATE);
-}
-
 LRESULT CALLBACK GUIWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     MyPlugin *plugin = (MyPlugin *) GetWindowLongPtr(window, 0);
 
@@ -380,30 +366,13 @@ LRESULT CALLBACK GUIWindowProcedure(HWND window, UINT message, WPARAM wParam, LP
     }
     
     switch (message) {
-        // case WM_PAINT: {
-        //     PAINTSTRUCT paint;
-        //     HDC dc = BeginPaint(window, &paint);
-        //     BITMAPINFO info = { { sizeof(BITMAPINFOHEADER), GUI_WIDTH, -GUI_HEIGHT, 1, 32, BI_RGB } };
-        //     StretchDIBits(dc, 0, 0, GUI_WIDTH, GUI_HEIGHT, 0, 0, GUI_WIDTH, GUI_HEIGHT, plugin->gui.bits, &info, DIB_RGB_COLORS, SRCCOPY);
-        //     EndPaint(window, &paint);
-        //     break;
-        // }  
-        
-        // case WM_MOUSEMOVE: {
-        //     PluginProcessMouseDrag(plugin, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
-        //     // GUIPaint(plugin, true);
+                // case WM_MOUSEMOVE: {
         //     break;
         // } 
         // case WM_LBUTTONDOWN: {
-        //     SetCapture(window); 
-        //     PluginProcessMousePress(plugin, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
-        //     // GUIPaint(plugin, true);
         //     break;
         // } 
         // case WM_LBUTTONUP: {
-        //     ReleaseCapture(); 
-        //     PluginProcessMouseRelease(plugin);
-        //     // GUIPaint(plugin, true);
         //     break;
         // }
         case WM_TIMER: {
@@ -494,7 +463,6 @@ static bool create_gui(const clap_plugin_t *_plugin, const char *api, bool is_fl
                                       NULL);
                                       
     SetWindowLongPtr(plugin->gui.window, 0, (LONG_PTR) plugin);
-    GUIPaint(plugin, true);
     
     plugin->gui.width = GUI_WIDTH;
     plugin->gui.height = GUI_HEIGHT;    
@@ -688,16 +656,20 @@ static void PluginProcessEvent(MyPlugin *plugin, const clap_event_header_t *even
     }
 }
 
-
 static void PluginRenderAudio(MyPlugin *plugin, u32 start, u32 end, float **inputs, float **outputs) {
-    for (u32 index = start; index < end; index++) {
-        
-        float in_gain    = plugin->audio_param_values[Gain];
-        float out_volume = powf(10.0f, plugin->audio_param_values[Volume] * 0.05f);
-        
-        outputs[0][index] = out_volume * tanhf(in_gain * inputs[0][index]);
-        outputs[1][index] = out_volume * tanhf(in_gain * inputs[1][index]);
     
+    u32 nsamples = end - start;
+    
+    float *inputL = &inputs[0][start];
+    float *inputR = &inputs[1][start];
+
+    float *outputL = &outputs[0][start];
+    float *outputR = &outputs[1][start];
+
+    
+    for (u32 index = 0; index < nsamples; index++) {
+        outputL[index] = inputL[index];
+        outputR[index] = inputR[index];
     }
 }
 
@@ -705,7 +677,10 @@ static void PluginRenderAudio(MyPlugin *plugin, u32 start, u32 end, float **inpu
 static clap_process_status plugin_class_process(const clap_plugin *_plugin, const clap_process_t *process) {
     MyPlugin *plugin = (MyPlugin*)_plugin->plugin_data;
 
+
+    // imports all the events from the FIFO
     PluginSyncMainToAudio(plugin, process->out_events);
+
     
     assert(process->audio_outputs_count == 1);
     assert(process->audio_inputs_count == 1);
@@ -716,11 +691,11 @@ static clap_process_status plugin_class_process(const clap_plugin *_plugin, cons
     u32 event_index = 0;
     u32 next_event_frame = input_event_count ? 0 : frame_count;
     
-    for (u32 index = 0; index < frame_count;) {
-        while (event_index < input_event_count && next_event_frame == index) {
+    for (u32 current_frame_index = 0; current_frame_index < frame_count;) {
+        while (event_index < input_event_count && next_event_frame == current_frame_index) {
             const clap_event_header_t *event = process->in_events->get(process->in_events, event_index);
             
-            if (event->time != index) {
+            if (event->time != current_frame_index) {
                 next_event_frame = event->time;
                 break;
             }
@@ -734,8 +709,8 @@ static clap_process_status plugin_class_process(const clap_plugin *_plugin, cons
             }
         }
                 
-        PluginRenderAudio(plugin, index, next_event_frame, process->audio_inputs[0].data32, process->audio_outputs[0].data32);
-        index = next_event_frame;
+        PluginRenderAudio(plugin, current_frame_index, next_event_frame, process->audio_inputs[0].data32, process->audio_outputs[0].data32);
+        current_frame_index = next_event_frame;
     }
     
     return CLAP_PROCESS_CONTINUE;
