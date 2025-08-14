@@ -59,14 +59,14 @@ global_const char *const plugin_features[4] = {
 
 global_const clap_plugin_descriptor_t pluginDescriptor {
     .clap_version = CLAP_VERSION_INIT,
-    .id          = "hermes140.clap_echo",       // eg: "com.u-he.diva", mandatory
-    .name        = "Clap echo",                 // eg: "Diva", mandatory
-    .vendor      = "Hermes140",                 // eg: "u-he"
-    .url         = "",                          // eg: "https://u-he.com/products/diva/"
-    .manual_url  = "",                          // eg: "https://dl.u-he.com/manuals/plugins/diva/Diva-user-guide.pdf"
-    .support_url = "",                          // eg: "https://u-he.com/support/"
-    .version     = "0.1",                       // eg: "1.4.4"
-    .description = "Simple clap echo",          // eg: "The spirit of analogue"
+    .id           = "hermes140.clap_echo",       // eg: "com.u-he.diva", mandatory
+    .name         = "Clap echo",                 // eg: "Diva", mandatory
+    .vendor       = "Hermes140",                 // eg: "u-he"
+    .url          = "",                          // eg: "https://u-he.com/products/diva/"
+    .manual_url   = "",                          // eg: "https://dl.u-he.com/manuals/plugins/diva/Diva-user-guide.pdf"
+    .support_url  = "",                          // eg: "https://u-he.com/support/"
+    .version      = "0.1",                       // eg: "1.4.4"
+    .description  = "Simple clap echo",          // eg: "The spirit of analogue"
     
     // Arbitrary list of keywords.
     // They can be matched by the host indexer and used to classify the plugin.
@@ -395,12 +395,32 @@ LRESULT CALLBACK GUIWindowProcedure(HWND window, UINT message, WPARAM wParam, LP
             ImGuiIO& io = ImGui::GetIO();
             
             {
+                ImGui::Begin("Clap Echo");
+   
+                if (ImGui::SliderFloat("Time",      &plugin->main_param_values[Time],      0.0f, 1.0f)) {
+                    plugin->main_param_changed[Time] = true;
+                }
                 
-                ImGui::Begin("Test plugin clap");
+                if (ImGui::SliderFloat("Feedback",  &plugin->main_param_values[Feedback],  0.0f, 1.0f)) {
+                    plugin->main_param_changed[Feedback] = true;
+                }
                 
-                ImGui::SliderFloat("value1", &gui->ui_value1, 0.0f, 1.0f);
-                ImGui::SliderFloat("value2", &gui->ui_value2, 0.0f, 1.0f);
-                ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
+                if (ImGui::SliderFloat("ToneFreq",  &plugin->main_param_values[ToneFreq],  0.0f, 1.0f)) {
+                    plugin->main_param_changed[ToneFreq] = true;
+                }
+                
+                if (ImGui::SliderFloat("Mix",       &plugin->main_param_values[Mix],       0.0f, 1.0f)) {
+                    plugin->main_param_changed[Mix] = true;
+                }
+                
+                if (ImGui::SliderFloat("ModFreq",   &plugin->main_param_values[ModFreq],   0.0f, 1.0f)) {
+                    plugin->main_param_changed[ModFreq] = true;
+                }
+                
+                if (ImGui::SliderFloat("ModAmount", &plugin->main_param_values[ModAmount], 0.0f, 1.0f)) {
+                    plugin->main_param_changed[ModAmount] = true;
+                }
+                
 
                 ImGui::End();
             }
