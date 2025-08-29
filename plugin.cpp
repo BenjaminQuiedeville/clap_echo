@@ -3,25 +3,26 @@
 #include <stdio.h>
 #include <assert.h>
 #include <math.h>
+#include <stdlib.h>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <windowsx.h>
 
+#include <GL/gl.h>
+
 #include <clap/clap.h>
 
-#include "imgui/imgui.cpp"
-#include "imgui/imgui_draw.cpp"
-#include "imgui/imgui_widgets.cpp"
-#include "imgui/imgui_tables.cpp"
+#include "imgui/imgui.h"
 
-#include "imgui/backends/imgui_impl_win32.cpp"
-#include "imgui/backends/imgui_impl_opengl3.cpp"
+#include "imgui/backends/imgui_impl_opengl3.h"
+#include "imgui/backends/imgui_impl_win32.h"
 
 typedef uint32_t u32;
 typedef int32_t i32;
 typedef uint64_t u64;
 typedef int64_t i64;
+typedef volatile i32 atomic_i32; 
 
 #define global_const static const
 #define local_const static const
@@ -35,6 +36,16 @@ struct EventFIFO {
     u32 push_index = 0;
     u32 pop_index = 0;
 };
+
+static inline int atomic_exchange_i32 ( atomic_i32* ptr, int v) { return __atomic_exchange_n(ptr, v, __ATOMIC_SEQ_CST); }
+static inline int atomic_load_i32(const atomic_i32* ptr)        { return __atomic_load_n    (ptr,    __ATOMIC_SEQ_CST); }
+static inline int atomic_fetch_add_i32( atomic_i32* ptr, int v) { return __atomic_fetch_add (ptr, v, __ATOMIC_SEQ_CST); }
+static inline int atomic_fetch_and_i32( atomic_i32* ptr, int v) { return __atomic_fetch_and (ptr, v, __ATOMIC_SEQ_CST); }
+
+static inline float dbtoa(float x) { return powf(10.0f, x * 0.05f); }
+static inline float atodb(float x) { return 20.0f * log10f(x); }
+
+#define CLIP(x, min, max) (x > max ? max : x < min ? min : x)
 
 // fifo_push_event(fifo, event);
 // event = fifo_pop_event(fifo);
@@ -88,7 +99,17 @@ struct GUI {
     u32 height = 0;
 };
 
-struct MyPlugin {
+struct Echo {
+    float *bufferL = nullptr;
+    float *bufferR = nullptr;
+    u32 buffer_size = 0;
+    u32 write_index = 0;
+    u32 read_index = 0;
+    float interpolation_coeff = 0.0f;
+};
+
+
+struct PluginData {
     clap_plugin_t     plugin                       = {};
     const clap_host_t *host                        = nullptr;
     float             samplerate                   = 0.0f; 
@@ -96,14 +117,15 @@ struct MyPlugin {
     float             main_param_values[NParams]   = {0};
     bool              audio_param_changed[NParams] = {0};
     bool              main_param_changed[NParams]  = {0};
-    
-    GUI gui = {};
+
+    Echo echo = {};
+    GUI gui   = {};
 };
 
-static void PluginSyncMainToAudio(MyPlugin *plugin, const clap_output_events_t *out);
-static bool PluginSyncAudioToMain(MyPlugin *plugin);
-static void PluginProcessEvent(MyPlugin *plugin, const clap_event_header_t *event);
-static void PluginRenderAudio(MyPlugin *plugin, u32 start, u32 end, float **inputs, float **outputs);
+static void PluginSyncMainToAudio(PluginData *plugin, const clap_output_events_t *out);
+static bool PluginSyncAudioToMain(PluginData *plugin);
+static void PluginProcessEvent(PluginData *plugin, const clap_event_header_t *event);
+static void PluginRenderAudio(PluginData *plugin, u32 start, u32 end, float **inputs, float **outputs);
 
 
 // audio ports plugin extension
@@ -215,7 +237,7 @@ bool params_get_info(const clap_plugin_t *_plugin, u32 index, clap_param_info_t 
 }
 
 bool param_get_value(const clap_plugin_t *_plugin, clap_id id, double *value) {
-    MyPlugin *plugin = (MyPlugin*)_plugin->plugin_data;
+    PluginData *plugin = (PluginData*)_plugin->plugin_data;
     u32 param_index = (u32)id;
     
     if (param_index >= NParams) { return false; }
@@ -262,7 +284,7 @@ bool param_convert_text_to_value(const clap_plugin_t *_plugin, clap_id param_id,
 }
 
 void param_flush(const clap_plugin_t *_plugin, const clap_input_events_t *in, const clap_output_events_t *out) {
-    MyPlugin *plugin = (MyPlugin*)_plugin->plugin_data;
+    PluginData *plugin = (PluginData*)_plugin->plugin_data;
     const u32 event_count = in->size(in);
     
     PluginSyncMainToAudio(plugin, out);
@@ -287,7 +309,7 @@ global_const clap_plugin_params_t extensionParams = {
 // state plugin extension
 
 bool plugin_state_save(const clap_plugin_t *_plugin, const clap_ostream_t *stream) {
-    MyPlugin *plugin = (MyPlugin*)_plugin->plugin_data;
+    PluginData *plugin = (PluginData*)_plugin->plugin_data;
     PluginSyncAudioToMain(plugin);
     
     u32 num_params_written = stream->write(stream, plugin->main_param_values, sizeof(float)*NParams);
@@ -296,7 +318,7 @@ bool plugin_state_save(const clap_plugin_t *_plugin, const clap_ostream_t *strea
 }
 
 bool plugin_state_load(const clap_plugin_t *_plugin, const clap_istream_t *stream) {
-    MyPlugin *plugin = (MyPlugin*)_plugin->plugin_data;
+    PluginData *plugin = (PluginData*)_plugin->plugin_data;
     
     // not thread safe
     u32 num_params_read = stream->read(stream, plugin->main_param_values, sizeof(float)* NParams);
@@ -351,8 +373,10 @@ static void CleanupDeviceWGL(GUI *gui) {
     ::ReleaseDC(gui->window, gui->device_context);
 }
 
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
 LRESULT CALLBACK GUIWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
-    MyPlugin *plugin = (MyPlugin *) GetWindowLongPtr(window, 0);
+    PluginData *plugin = (PluginData *) GetWindowLongPtr(window, 0);
 
     if (!plugin) {
         return DefWindowProc(window, message, wParam, lParam);
@@ -366,7 +390,7 @@ LRESULT CALLBACK GUIWindowProcedure(HWND window, UINT message, WPARAM wParam, LP
     }
     
     switch (message) {
-                // case WM_MOUSEMOVE: {
+        // case WM_MOUSEMOVE: {
         //     break;
         // } 
         // case WM_LBUTTONDOWN: {
@@ -460,13 +484,13 @@ static bool create_gui(const clap_plugin_t *_plugin, const char *api, bool is_fl
         return false;
     }
 
-    MyPlugin* plugin = (MyPlugin*)_plugin->plugin_data;
+    PluginData* plugin = (PluginData*)_plugin->plugin_data;
 
     plugin->gui.windowClass = {};
     
     memset(&plugin->gui.windowClass, 0, sizeof(plugin->gui.windowClass));
     plugin->gui.windowClass.lpfnWndProc = GUIWindowProcedure;
-    plugin->gui.windowClass.cbWndExtra = sizeof(MyPlugin *);
+    plugin->gui.windowClass.cbWndExtra = sizeof(PluginData *);
     plugin->gui.windowClass.lpszClassName = pluginDescriptor.id;
     plugin->gui.windowClass.hCursor = LoadCursor(NULL, IDC_ARROW);
     plugin->gui.windowClass.style = CS_OWNDC | CS_DBLCLKS;
@@ -490,7 +514,7 @@ static bool create_gui(const clap_plugin_t *_plugin, const char *api, bool is_fl
 }
 
 static void destroy_gui(const clap_plugin_t *_plugin) {
-    MyPlugin* plugin = (MyPlugin*)_plugin->plugin_data;
+    PluginData* plugin = (PluginData*)_plugin->plugin_data;
     
     DestroyWindow(plugin->gui.window);
     plugin->gui.window = nullptr;
@@ -527,7 +551,7 @@ static bool set_gui_size(const clap_plugin_t *_plugin, u32 width, u32 height) {
 static bool set_gui_parent(const clap_plugin_t *_plugin, const clap_window_t *parent_window) {
     assert(0 == strcmp(parent_window->api, GUI_API));
     
-    MyPlugin *plugin = (MyPlugin*)_plugin->plugin_data;
+    PluginData *plugin = (PluginData*)_plugin->plugin_data;
     
     SetParent(plugin->gui.window, (HWND)parent_window->win32);
     return true;
@@ -540,7 +564,7 @@ static bool set_gui_transient(const clap_plugin_t *_plugin, const clap_window_t 
 static void suggest_gui_title(const clap_plugin_t *_plugin, const char *title) {}
 
 static bool show_gui(const clap_plugin_t *_plugin) {
-    MyPlugin *plugin =(MyPlugin*)_plugin->plugin_data;
+    PluginData *plugin =(PluginData*)_plugin->plugin_data;
     GUI *gui = &plugin->gui;
     
     ShowWindow(gui->window, SW_SHOW);
@@ -574,7 +598,7 @@ static bool show_gui(const clap_plugin_t *_plugin) {
 }
 
 static bool hide_gui(const clap_plugin_t *_plugin) {
-    MyPlugin *plugin =(MyPlugin*)_plugin->plugin_data;
+    PluginData *plugin =(PluginData*)_plugin->plugin_data;
     GUI *gui = &plugin->gui;
     
     ShowWindow(gui->window, SW_HIDE);
@@ -619,7 +643,7 @@ global_const clap_plugin_gui_t extensionGUI = {
 
 // main plugin class
 
-static void PluginSyncMainToAudio(MyPlugin *plugin, const clap_output_events_t *out) {
+static void PluginSyncMainToAudio(PluginData *plugin, const clap_output_events_t *out) {
 
     // not thread safe    
     for (u32 param_index = 0; param_index < NParams; param_index++) {
@@ -646,7 +670,7 @@ static void PluginSyncMainToAudio(MyPlugin *plugin, const clap_output_events_t *
 }
 
 
-static bool PluginSyncAudioToMain(MyPlugin *plugin) {
+static bool PluginSyncAudioToMain(PluginData *plugin) {
     bool any_param_has_changed = false;
 
     // not thread safe    
@@ -662,21 +686,51 @@ static bool PluginSyncAudioToMain(MyPlugin *plugin) {
 }
 
  
-static void PluginProcessEvent(MyPlugin *plugin, const clap_event_header_t *event) {
+static void PluginProcessEvent(PluginData *plugin, const clap_event_header_t *event) {
     if (event->space_id == CLAP_CORE_EVENT_SPACE_ID) {
         if (event->type == CLAP_EVENT_PARAM_VALUE) {
             const clap_event_param_value_t *param_event = (clap_event_param_value_t*)event;
             
             u32 param_index = param_event->param_id;
             
-            // not thread safe
-            plugin->audio_param_values[param_index]  = (float)param_event->value;
-            plugin->audio_param_changed[param_index] = true;
+            switch (param_index) {
+                case Time: {
+                
+                    float time_ms = (float)param_event->value;
+                    
+                    // remplacer par les valeurs du futur tableau des infos de parametres
+                    time_ms = CLIP(time_ms, 1.0f, 2000.0f);
+                    
+                    float read_position = (float)plugin->echo.write_index - (time_ms * 0.001f * plugin->samplerate);
+                    
+                    if (read_position < 0.0f) {
+                        read_position += (float)plugin->echo.buffer_size;
+                    }
+                    
+                    u32 read_index = floorf(read_position);
+                    
+                    plugin->echo.read_index = read_index;
+                    plugin->echo.interpolation_coeff = read_position - (float)read_index;
+                                        
+                    break;
+                }
+                case Feedback:
+                case ToneFreq:
+                case Mix:
+                case ModFreq:
+                case ModAmount: {
+                    plugin->audio_param_values[param_index]  = (float)param_event->value;
+                    plugin->audio_param_changed[param_index] = true;
+                    break;
+                } 
+                default: { break; }
+            }
+            
         }
     }
 }
 
-static void PluginRenderAudio(MyPlugin *plugin, u32 start, u32 end, float **inputs, float **outputs) {
+static void PluginRenderAudio(PluginData *plugin, u32 start, u32 end, float **inputs, float **outputs) {
     
     u32 nsamples = end - start;
     
@@ -688,14 +742,36 @@ static void PluginRenderAudio(MyPlugin *plugin, u32 start, u32 end, float **inpu
 
     
     for (u32 index = 0; index < nsamples; index++) {
-        outputL[index] = inputL[index];
-        outputR[index] = inputR[index];
+    
+        Echo *echo = &plugin->echo;
+        
+        echo->bufferL[echo->write_index] = inputL[index];
+        echo->bufferR[echo->write_index] = inputR[index];
+                        
+        u32 read_index = echo->read_index;
+        float interpolation_coeff = echo->interpolation_coeff;
+        
+        float sample1L = echo->bufferL[read_index];
+        float sample1R = echo->bufferR[read_index];
+                
+        read_index++;
+        if (read_index >= echo->buffer_size) {
+            read_index = 0;
+        }
+        
+        float sample2L = echo->bufferL[read_index];
+        float sample2R = echo->bufferR[read_index];
+        
+        outputL[index] = sample1L * interpolation_coeff + sample2L * (1.0f - interpolation_coeff);
+        outputR[index] = sample1R * interpolation_coeff + sample2R * (1.0f - interpolation_coeff);
+
+        echo->read_index = read_index;    
     }
 }
 
 
 static clap_process_status plugin_class_process(const clap_plugin *_plugin, const clap_process_t *process) {
-    MyPlugin *plugin = (MyPlugin*)_plugin->plugin_data;
+    PluginData *plugin = (PluginData*)_plugin->plugin_data;
 
 
     // imports all the events from the FIFO
@@ -737,7 +813,7 @@ static clap_process_status plugin_class_process(const clap_plugin *_plugin, cons
 }
 
 static bool plugin_class_init(const clap_plugin *_plugin)  {
-    MyPlugin *plugin = (MyPlugin*)_plugin->plugin_data;
+    PluginData *plugin = (PluginData*)_plugin->plugin_data;
     for (u32 param_index = 0; param_index < NParams; param_index++) {
         clap_param_info_t information = {0};
         extensionParams.get_info(_plugin, param_index, &information);
@@ -749,12 +825,12 @@ static bool plugin_class_init(const clap_plugin *_plugin)  {
 }
 
 static void plugin_class_destroy(const clap_plugin *_plugin) {
-    MyPlugin *plugin = (MyPlugin*)_plugin->plugin_data;
+    PluginData *plugin = (PluginData*)_plugin->plugin_data;
     free(plugin);
 }
 
 static bool plugin_class_activate(const clap_plugin *_plugin, double samplerate, u32 min_buffer_size, u32 max_buffer_size) {
-    MyPlugin *plugin = (MyPlugin*)_plugin->plugin_data;
+    PluginData *plugin = (PluginData*)_plugin->plugin_data;
     plugin->samplerate = samplerate;
     return true;
 }
@@ -768,7 +844,7 @@ static bool plugin_class_start_processing(const clap_plugin *_plugin) {
 static void plugin_class_stop_processing(const clap_plugin *_plugin) {}
 
 static void plugin_class_reset(const clap_plugin *_plugin) {
-    MyPlugin *plugin = (MyPlugin*)_plugin->plugin_data;
+    PluginData *plugin = (PluginData*)_plugin->plugin_data;
     (void)plugin;
 }
 
@@ -821,7 +897,7 @@ const clap_plugin_t* create_plugin(const clap_plugin_factory_t *factory, const c
         return nullptr;
     }
     
-    MyPlugin *plugin = (MyPlugin*)calloc(1, sizeof(MyPlugin));
+    PluginData *plugin = (PluginData*)calloc(1, sizeof(PluginData));
     plugin->host = host;
     plugin->plugin = pluginClass;
     plugin->plugin.plugin_data = plugin;

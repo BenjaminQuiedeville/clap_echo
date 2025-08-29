@@ -17,7 +17,7 @@ set(CLAP_SDK_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../clap)
 set(CLAP_VST3_TUID_STRING "cech")
 
 
-add_library(${PROJECT_NAME}_static STATIC plugin.cpp)
+add_library(${PROJECT_NAME}_static STATIC plugin.cpp imgui_code.cpp)
 
 target_include_directories(${PROJECT_NAME}_static PRIVATE imgui ${CLAP_SDK_ROOT}/include)
 
