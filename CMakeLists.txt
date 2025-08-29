@@ -17,7 +17,7 @@ set(CLAP_SDK_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../clap)
 set(CLAP_VST3_TUID_STRING "cech")
 
 
-add_library(${PROJECT_NAME}_static STATIC plugin.cpp imgui_code.cpp)
+add_library(${PROJECT_NAME}_static STATIC source/plugin.cpp source/imgui_code.cpp)
 
 target_include_directories(${PROJECT_NAME}_static PRIVATE imgui ${CLAP_SDK_ROOT}/include)
 
@@ -28,12 +28,12 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/clap-wrapper)
 set(VST3_TARGET ${PROJECT_NAME}_vst3)
 
 make_clapfirst_plugins(
-    TARGET_NAME         ${PROJECT_NAME}         # name of the output target. It will be postpended _clap, _vst3, _all
-    IMPL_TARGET         ${PROJECT_NAME}_static  # name of the target you set up with your static library
-    OUTPUT_NAME         ${PROJECT_NAME}         # output name of your CLAP, VST3, etc...
-    ENTRY_SOURCE        plugin_entry.cpp        # source file of the small cpp with the export directives and link to init
-    COPY_AFTER_BUILD    FALSE                   # If true, on mac and lin the clap/vst3/etc... will install locally
-    WINDOWS_FOLDER_VST3 FALSE                   # True for a filder, false for single file (default)
-    PLUGIN_FORMATS      CLAP VST3               # A list of plugin formats, "CLAP" "VST3" "AUV2"
+    TARGET_NAME         ${PROJECT_NAME}           # name of the output target. It will be postpended _clap, _vst3, _all
+    IMPL_TARGET         ${PROJECT_NAME}_static    # name of the target you set up with your static library
+    OUTPUT_NAME         ${PROJECT_NAME}           # output name of your CLAP, VST3, etc...
+    ENTRY_SOURCE        source/plugin_entry.cpp   # source file of the small cpp with the export directives and link to init
+    COPY_AFTER_BUILD    FALSE                     # If true, on mac and lin the clap/vst3/etc... will install locally
+    WINDOWS_FOLDER_VST3 FALSE                     # True for a filder, false for single file (default)
+    PLUGIN_FORMATS      CLAP VST3                 # A list of plugin formats, "CLAP" "VST3" "AUV2"
 )
 

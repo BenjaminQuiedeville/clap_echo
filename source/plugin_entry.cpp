@@ -1,4 +1,4 @@
-#include "../clap/include/clap/entry.h"
+#include "../../clap/include/clap/entry.h"
 
 bool lib_init(const char *path);
 void lib_deinit();

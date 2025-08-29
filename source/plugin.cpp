@@ -13,10 +13,10 @@
 
 #include <clap/clap.h>
 
-#include "imgui/imgui.h"
+#include "../imgui/imgui.h"
 
-#include "imgui/backends/imgui_impl_opengl3.h"
-#include "imgui/backends/imgui_impl_win32.h"
+#include "../imgui/backends/imgui_impl_opengl3.h"
+#include "../imgui/backends/imgui_impl_win32.h"
 
 typedef uint32_t u32;
 typedef int32_t i32;
