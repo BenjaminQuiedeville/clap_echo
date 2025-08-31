@@ -14,42 +14,19 @@
 		"gridsize" : [ 15.0, 15.0 ],
 		"boxes" : [ 			{
 				"box" : 				{
-					"id" : "obj-3",
-					"maxclass" : "newobj",
-					"numinlets" : 2,
-					"numoutlets" : 1,
-					"outlettype" : [ "signal" ],
-					"patching_rect" : [ 288.0, 166.0, 66.0, 22.0 ],
-					"text" : "cycle~ 100"
-				}
-
-			}
-, 			{
-				"box" : 				{
-					"automatic" : 1,
-					"id" : "obj-2",
-					"maxclass" : "scope~",
-					"numinlets" : 2,
-					"numoutlets" : 0,
-					"patching_rect" : [ 152.0, 430.0, 449.0, 292.0 ]
-				}
-
-			}
-, 			{
-				"box" : 				{
 					"autosave" : 1,
 					"bgmode" : 0,
 					"border" : 0,
 					"clickthrough" : 0,
 					"id" : "obj-1",
-					"linecount" : 3,
 					"maxclass" : "newobj",
 					"numinlets" : 2,
 					"numoutlets" : 8,
 					"offset" : [ 0.0, 0.0 ],
 					"outlettype" : [ "signal", "signal", "", "list", "int", "", "", "" ],
-					"patching_rect" : [ 235.0, 251.0, 330.0, 114.0 ],
-					"save" : [ "#N", "vst~", "loaduniqueid", 0, "C:/Users/benjamin/Dev/clap/clap_tutorial/build/Debug/clap_tutorial.vst3", ";" ],
+					"patching_rect" : [ 269.0, 246.0, 444.0, 218.0 ],
+					"presentation_linecount" : 2,
+					"save" : [ "#N", "vst~", "loaduniqueid", 0, "D:/Dev/clap/clap_echo/build/Debug/clap_echo.vst3", ";" ],
 					"saved_attribute_attributes" : 					{
 						"valueof" : 						{
 							"parameter_invisible" : 1,
@@ -76,16 +53,16 @@
 						"subtype" : "Undefined",
 						"embed" : 1,
 						"snapshot" : 						{
-							"pluginname" : "clap_tutorial.vst3",
-							"plugindisplayname" : "TestClap (CLAP->VST3)",
+							"pluginname" : "clap_echo.vst3",
+							"plugindisplayname" : "Clap echo (CLAP->VST3)",
 							"pluginsavedname" : "",
 							"pluginsaveduniqueid" : 0,
 							"version" : 1,
 							"isbank" : 0,
 							"isbase64" : 1,
 							"sliderorder" : [  ],
-							"slidervisibility" : [ 1, 1 ],
-							"blob" : "121.VMjLg.G....O+fWarAhckI2bo8la8HRLt.iHfTlai8FYo41Y8HRUTYTK3HxO9.BOVMEUy.Ea0cVZtMEcgQWY9vSRC8Vav8lak4Fc9fiKt3hKlshKt3hK4LDOujzPu0Fbu4VYtQmO77hUSQ0LPwVcmklaSQWXzUlO.."
+							"slidervisibility" : [ 1, 1, 1, 1, 1, 1 ],
+							"blob" : "143.VMjLgXH....O+fWarAhckI2bo8la8HRLt.iHfTlai8FYo41Y8HRUTYTK3HxO9.BOVMEUy.Ea0cVZtMEcgQWY9vSRC8Vav8lak4Fc9HCMtzVVNI0PuYGLoUyPtXWVgEkRhgia43hKt3RNC4hKt3hK77RRC8Vav8lak4Fc9vyKVMEUy.Ea0cVZtMEcgQWY9.."
 						}
 ,
 						"snapshotlist" : 						{
@@ -94,30 +71,30 @@
 									"filetype" : "C74Snapshot",
 									"version" : 2,
 									"minorversion" : 0,
-									"name" : "TestClap (CLAP->VST3)",
-									"origin" : "clap_tutorial.vst3",
+									"name" : "Clap echo (CLAP->VST3)",
+									"origin" : "clap_echo.vst3",
 									"type" : "VST3",
 									"subtype" : "AudioEffect",
-									"embed" : 1,
+									"embed" : 0,
 									"snapshot" : 									{
-										"pluginname" : "clap_tutorial.vst3",
-										"plugindisplayname" : "TestClap (CLAP->VST3)",
+										"pluginname" : "clap_echo.vst3",
+										"plugindisplayname" : "Clap echo (CLAP->VST3)",
 										"pluginsavedname" : "",
 										"pluginsaveduniqueid" : 0,
 										"version" : 1,
 										"isbank" : 0,
 										"isbase64" : 1,
 										"sliderorder" : [  ],
-										"slidervisibility" : [ 1, 1 ],
-										"blob" : "121.VMjLg.G....O+fWarAhckI2bo8la8HRLt.iHfTlai8FYo41Y8HRUTYTK3HxO9.BOVMEUy.Ea0cVZtMEcgQWY9vSRC8Vav8lak4Fc9fiKt3hKlshKt3hK4LDOujzPu0Fbu4VYtQmO77hUSQ0LPwVcmklaSQWXzUlO.."
+										"slidervisibility" : [ 1, 1, 1, 1, 1, 1 ],
+										"blob" : "143.VMjLgXH....O+fWarAhckI2bo8la8HRLt.iHfTlai8FYo41Y8HRUTYTK3HxO9.BOVMEUy.Ea0cVZtMEcgQWY9vSRC8Vav8lak4Fc9HCMtzVVNI0PuYGLoUyPtXWVgEkRhgia43hKt3RNC4hKt3hK77RRC8Vav8lak4Fc9vyKVMEUy.Ea0cVZtMEcgQWY9.."
 									}
 ,
 									"fileref" : 									{
-										"name" : "TestClap (CLAP->VST3)",
-										"filename" : "TestClap (CLAP->VST3).maxsnap",
-										"filepath" : "~/Documents/Max 9/Snapshots",
+										"name" : "Clap echo (CLAP->VST3)",
+										"filename" : "Clap echo (CLAP->VST3).maxsnap",
+										"filepath" : "D:/Documents/Max 9/Snapshots",
 										"filepos" : -1,
-										"snapshotfileid" : "de6ee4f3e3951d2b6aa81bf1796271d3"
+										"snapshotfileid" : "d556f463ed3dc51bd5ddb99d72c3cc3c"
 									}
 
 								}
@@ -126,9 +103,55 @@
 
 					}
 ,
-					"text" : "vst~ C:/Users/benjamin/Dev/clap/clap_tutorial/build/Debug/clap_tutorial.vst3",
+					"text" : "vst~ D:/Dev/clap/clap_echo/build/Debug/clap_echo.vst3",
 					"varname" : "vst~",
 					"viewvisibility" : 1
+				}
+
+			}
+, 			{
+				"box" : 				{
+					"id" : "obj-6",
+					"maxclass" : "button",
+					"numinlets" : 1,
+					"numoutlets" : 1,
+					"outlettype" : [ "bang" ],
+					"parameter_enable" : 0,
+					"patching_rect" : [ 290.0, 90.0, 24.0, 24.0 ]
+				}
+
+			}
+, 			{
+				"box" : 				{
+					"id" : "obj-4",
+					"maxclass" : "live.scope~",
+					"numinlets" : 2,
+					"numoutlets" : 1,
+					"outlettype" : [ "bang" ],
+					"patching_rect" : [ 523.0, 525.0, 184.0, 68.0 ]
+				}
+
+			}
+, 			{
+				"box" : 				{
+					"id" : "obj-2",
+					"maxclass" : "live.scope~",
+					"numinlets" : 2,
+					"numoutlets" : 1,
+					"outlettype" : [ "bang" ],
+					"patching_rect" : [ 243.0, 521.0, 184.0, 68.0 ]
+				}
+
+			}
+, 			{
+				"box" : 				{
+					"id" : "obj-3",
+					"maxclass" : "newobj",
+					"numinlets" : 1,
+					"numoutlets" : 1,
+					"outlettype" : [ "signal" ],
+					"patching_rect" : [ 288.0, 166.0, 39.0, 22.0 ],
+					"text" : "click~"
 				}
 
 			}
@@ -144,6 +167,13 @@
 				"patchline" : 				{
 					"destination" : [ "obj-1", 0 ],
 					"source" : [ "obj-3", 0 ]
+				}
+
+			}
+, 			{
+				"patchline" : 				{
+					"destination" : [ "obj-3", 0 ],
+					"source" : [ "obj-6", 0 ]
 				}
 
 			}
