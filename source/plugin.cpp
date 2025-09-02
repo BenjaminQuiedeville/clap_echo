@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <math.h>
 #include <stdlib.h>
+#include <atomic>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -36,18 +37,17 @@ static inline float atodb(float x) { return 20.0f * log10f(x); }
 #define memset_float(ptr, value, nelements)   memset(ptr, value, nelements*sizeof(float))
 #define memcpy_float(dest, source, nelements) memcpy(dest, source, nelements*sizeof(float))
 
-
 #define CLIP(x, min, max) (x > max ? max : x < min ? min : x)
 
 
 enum ParamsIndex {
-    Time,
-    Feedback,
-    ToneFreq,
-    Mix,
-    ModFreq,
-    ModAmount,
-    NParams,
+    TIME,
+    FEEDBACK,
+    TONE_FREQ,
+    MIX,
+    MOD_FREQ,
+    MOD_AMT,
+    NPARAMS,
 };
 
 global_const char *const plugin_features[4] = {
@@ -75,7 +75,26 @@ global_const clap_plugin_descriptor_t pluginDescriptor {
     .features = plugin_features,
 };
 
-global_const float ECHO_MAX_LENGTH_MS = 2000.0f;
+enum ParamEventType : u32 {
+    GUI_VALUE_CHANGE,
+    GUI_GESTURE_BEGIN,
+    GUI_GESTURE_END,
+    NEVENTTYPES,
+};
+
+struct ParamEvent {
+    u32 param_index = 0;
+    u32 event_type = 0;
+    float value = 0.0f;
+};
+
+global_const u32 FIFO_SIZE = 256;
+
+struct EventFIFO {
+    ParamEvent events[FIFO_SIZE] = {{}};
+    std::atomic<u32> write_index = 0;
+    std::atomic<u32> read_index = 0;
+};
 
 global_const float RAMP_TIME_MS = 100.0f;
 
@@ -88,6 +107,134 @@ struct RampedValue {
     float *value_buffer = nullptr;
     bool  is_smoothing  = false;
 };
+
+struct ParamInfo {
+    const char *name;
+    float min = 0.0f;
+    float max = 0.0f;
+    float default_value = 0.0f;
+    ImGuiSliderFlags imgui_flags = 0;
+    u32 clap_param_flags = 0;
+};
+
+global_const ParamInfo parameter_infos[NPARAMS] {
+    {
+        .name = "Delay TIME", .min = 1.0f, .max = 2000.0f, .default_value = 300.0f,
+        .imgui_flags = ImGuiSliderFlags_AlwaysClamp,
+        .clap_param_flags = CLAP_PARAM_IS_AUTOMATABLE
+    },
+    {
+        .name = "FEEDBACK", .min = 0.0f, .max = 1.0f, .default_value = 0.5f,
+        .imgui_flags = ImGuiSliderFlags_AlwaysClamp,
+        .clap_param_flags = CLAP_PARAM_IS_AUTOMATABLE
+    },
+    {
+        .name = "Delay Tone", .min = 500.0f, .max = 20000.0f, .default_value = 10000.0f,
+        .imgui_flags = ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic,
+        .clap_param_flags = CLAP_PARAM_IS_AUTOMATABLE
+    },
+    {
+        .name = "MIX", .min = 0.0f, .max = 1.0f, .default_value = 0.5f,
+        .imgui_flags = ImGuiSliderFlags_AlwaysClamp,
+        .clap_param_flags = CLAP_PARAM_IS_AUTOMATABLE
+    },
+    {
+        .name = "Mod Freq", .min = 0.0f, .max = 5.0f, .default_value = 1.0f,
+        .imgui_flags = ImGuiSliderFlags_AlwaysClamp,
+        .clap_param_flags = CLAP_PARAM_IS_AUTOMATABLE
+    },
+    {
+        .name = "Mod Amount", .min = 0.0f, .max = 1.0f, .default_value = 0.0f,
+        .imgui_flags = ImGuiSliderFlags_AlwaysClamp,
+        .clap_param_flags = CLAP_PARAM_IS_AUTOMATABLE
+    },
+};
+
+struct GUI {
+    HWND window = nullptr;
+    WNDCLASS windowClass = {};
+    ImGuiContext *imgui_context = nullptr;
+    HDC device_context = nullptr;
+    HGLRC opengl_context = nullptr;
+    u32 width = 0;
+    u32 height = 0;
+};
+
+
+struct Echo {
+    float *bufferL = nullptr;
+    float *bufferR = nullptr;
+    u32 buffer_size = 0;
+    u32 write_index = 0;
+    u32 delay_in_samples = 0;
+    float interpolation_coeff = 0.0f;
+};
+
+struct PluginData {
+    clap_plugin_t             plugin                       = {};
+    const clap_host_t         *host                        = nullptr;
+    const clap_host_params_t  *host_params                 = nullptr;
+    float                     samplerate                   = 0.0f;
+    u32                       min_buffer_size              = 0;
+    u32                       max_buffer_size              = 0;
+
+    RampedValue               ramped_params[NPARAMS]       = {};
+
+    float                     audio_param_values[NPARAMS]  = {0};
+    float                     main_param_values[NPARAMS]   = {0};
+    bool                      audio_param_changed[NPARAMS] = {0};
+    bool                      main_param_changed[NPARAMS]  = {0};
+    bool                      param_gesture_start[NPARAMS] = {0};
+    bool                      param_gesture_end[NPARAMS]   = {0};
+    bool                      param_is_in_edit[NPARAMS]    = {0};
+    
+    EventFIFO                 audio_to_main_fifo           = {};
+    EventFIFO                 main_to_audio_fifo           = {};
+
+    Echo echo = {};
+    GUI gui   = {};
+};
+
+
+static void plugin_sync_main_to_audio(PluginData *plugin, const clap_output_events_t *out);
+static bool plugin_sync_audio_to_main(PluginData *plugin);
+static void plugin_process_event(PluginData *plugin, const clap_event_header_t *event);
+static void plugin_render_audio(PluginData *plugin, u32 start, u32 end, float **inputs, float **outputs);
+static void handle_parameter_change(PluginData *plugin, u32 param_index, float value);
+
+
+
+static void main_push_event_to_audio(PluginData *plugin, u32 param_index, u32 event_type, float value) {
+
+    u32 write_index = plugin->main_to_audio_fifo.write_index.load();
+    
+    ParamEvent *event = &plugin->main_to_audio_fifo.events[write_index];
+    event->param_index = param_index; 
+    event->event_type = event_type;
+    event->value = value;
+    
+    plugin->main_to_audio_fifo.write_index.fetch_add(1);
+    plugin->main_to_audio_fifo.write_index.fetch_and(FIFO_SIZE-1);
+
+}
+
+
+void set_echo_delay(Echo* echo, float delay_ms, float samplerate) {
+    
+    delay_ms = CLIP(delay_ms, parameter_infos[TIME].min, parameter_infos[TIME].max);
+
+    float delay_frac = delay_ms * 0.001f * samplerate;
+
+    // if (read_position < 0.0f) {
+    //     read_position += (float)echo->buffer_size;
+    // }
+
+    u32 delay_in_samples = floorf(delay_frac);
+
+    echo->delay_in_samples = delay_in_samples;
+    echo->interpolation_coeff = delay_frac - (float)delay_in_samples;
+}
+
 
 static void ramped_value_init(RampedValue *value, float init_value, u32 value_buffer_size) {
     value->target = init_value;
@@ -164,101 +311,11 @@ static void ramped_value_fill_buffer(RampedValue *value, u32 nsamples) {
     value->norm_value = norm_value;
 }
 
-struct ParamInfo {
-    const char *name;
-    float min = 0.0f;
-    float max = 0.0f;
-    float default_value = 0.0f;
-    ImGuiSliderFlags imgui_flags = 0;
-    u32 clap_param_flags = 0;
-};
-
-global_const ParamInfo parameter_infos[NParams] {
-    {
-        .name = "Delay Time", .min = 1.0f, .max = 2000.0f, .default_value = 300.0f,
-        .imgui_flags = ImGuiSliderFlags_AlwaysClamp,
-        .clap_param_flags = CLAP_PARAM_IS_AUTOMATABLE
-    },
-    {
-        .name = "Feedback", .min = 0.0f, .max = 1.0f, .default_value = 0.5f,
-        .imgui_flags = ImGuiSliderFlags_AlwaysClamp,
-        .clap_param_flags = CLAP_PARAM_IS_AUTOMATABLE
-    },
-    {
-        .name = "Delay Tone", .min = 500.0f, .max = 20000.0f, .default_value = 10000.0f,
-        .imgui_flags = ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic,
-        .clap_param_flags = CLAP_PARAM_IS_AUTOMATABLE
-    },
-    {
-        .name = "Mix", .min = 0.0f, .max = 1.0f, .default_value = 0.5f,
-        .imgui_flags = ImGuiSliderFlags_AlwaysClamp,
-        .clap_param_flags = CLAP_PARAM_IS_AUTOMATABLE
-    },
-    {
-        .name = "Mod Freq", .min = 0.0f, .max = 5.0f, .default_value = 1.0f,
-        .imgui_flags = ImGuiSliderFlags_AlwaysClamp,
-        .clap_param_flags = CLAP_PARAM_IS_AUTOMATABLE
-    },
-    {
-        .name = "Mod Amount", .min = 0.0f, .max = 1.0f, .default_value = 0.0f,
-        .imgui_flags = ImGuiSliderFlags_AlwaysClamp,
-        .clap_param_flags = CLAP_PARAM_IS_AUTOMATABLE
-    },
-};
-
-struct GUI {
-    HWND window = nullptr;
-    WNDCLASS windowClass = {};
-    ImGuiContext *imgui_context = nullptr;
-    HDC device_context = nullptr;
-    HGLRC opengl_context = nullptr;
-    u32 width = 0;
-    u32 height = 0;
-};
-
-
-struct Echo {
-    float *bufferL = nullptr;
-    float *bufferR = nullptr;
-    u32 buffer_size = 0;
-    u32 write_index = 0;
-    u32 read_index = 0;
-    float interpolation_coeff = 0.0f;
-};
-
-
-struct PluginData {
-    clap_plugin_t             plugin                       = {};
-    const clap_host_t         *host                        = nullptr;
-    const clap_host_params_t  *host_params                 = nullptr;
-    float                     samplerate                   = 0.0f;
-    u32                       min_buffer_size              = 0;
-    u32                       max_buffer_size              = 0;
-
-    RampedValue               ramped_params[NParams]       = {};
-
-    float                     audio_param_values[NParams]  = {0};
-    float                     main_param_values[NParams]   = {0};
-    bool                      audio_param_changed[NParams] = {0};
-    bool                      main_param_changed[NParams]  = {0};
-    bool                      param_gesture_start[NParams] = {0};
-    bool                      param_gesture_end[NParams]   = {0};
-    bool                      param_is_in_edit[NParams]    = {0};
-
-    Echo echo = {};
-    GUI gui   = {};
-};
-
-static void PluginSyncMainToAudio(PluginData *plugin, const clap_output_events_t *out);
-static bool PluginSyncAudioToMain(PluginData *plugin);
-static void PluginProcessEvent(PluginData *plugin, const clap_event_header_t *event);
-static void PluginRenderAudio(PluginData *plugin, u32 start, u32 end, float **inputs, float **outputs);
-
 
 // audio ports plugin extension
 
 static u32 get_audio_ports_count(const clap_plugin_t *plugin, bool isInput) {
-    return isInput ? 1 : 1;
+    return 1;
 }
 
 static bool get_audio_ports_info(const clap_plugin_t *plugin, u32 index, bool isInput, clap_audio_port_info_t *info) {
@@ -273,7 +330,7 @@ static bool get_audio_ports_info(const clap_plugin_t *plugin, u32 index, bool is
 
     } else {
 
-        info->id = 1;
+        info->id = 0;
         info->channel_count = 2;
         info->flags = CLAP_AUDIO_PORT_IS_MAIN;
         info->port_type = CLAP_PORT_STEREO;
@@ -291,11 +348,11 @@ global_const clap_plugin_audio_ports_t extensionAudioPorts = {
 
 // parameter plugin extension
 
-u32 get_num_params(const clap_plugin_t *plugin) { return NParams; }
+u32 get_num_params(const clap_plugin_t *plugin) { return NPARAMS; }
 
 static bool params_get_info(const clap_plugin_t *_plugin, u32 index, clap_param_info_t *information) {
 
-    if (index >= NParams) { return false; }
+    if (index >= NPARAMS) { return false; }
 
     memset(information, 0, sizeof(*information));
     information->id = index;
@@ -311,7 +368,7 @@ static bool param_get_value(const clap_plugin_t *_plugin, clap_id id, double *va
     PluginData *plugin = (PluginData*)_plugin->plugin_data;
     u32 param_index = (u32)id;
 
-    if (param_index >= NParams) { return false; }
+    if (param_index >= NPARAMS) { return false; }
 
     // not thread safe
     *value = plugin->main_param_changed[param_index] ? (double)plugin->main_param_values[param_index]
@@ -323,22 +380,22 @@ static bool param_convert_value_to_text(const clap_plugin_t *_plugin, clap_id id
     u32 param_index = (u32) id;
 
     switch (param_index) {
-        case Time: {
+        case TIME: {
             snprintf(display, size, "%f ms", value);
             return true;
         }
-        case ModAmount:
-        case Feedback:
-        case Mix: {
+        case MOD_AMT:
+        case FEEDBACK:
+        case MIX: {
             snprintf(display, size, "%f", value);
             return true;
         }
-        case ToneFreq:
-        case ModFreq: {
+        case TONE_FREQ:
+        case MOD_FREQ: {
             snprintf(display, size, "%f Hz", value);
             return true;
         }
-        case NParams:
+        case NPARAMS:
         default: {
             return false;
         }
@@ -348,7 +405,7 @@ static bool param_convert_value_to_text(const clap_plugin_t *_plugin, clap_id id
 static bool param_convert_text_to_value(const clap_plugin_t *_plugin, clap_id param_id, const char *display, double *value) {
 
     u32 param_index = (u32)param_id;
-    if (param_index >= NParams) { return false; }
+    if (param_index >= NPARAMS) { return false; }
 
     *value = (double)atoi(display);
     return true;
@@ -359,10 +416,10 @@ static void param_flush(const clap_plugin_t *_plugin, const clap_input_events_t 
     PluginData *plugin = (PluginData*)_plugin->plugin_data;
     const u32 event_count = in->size(in);
 
-    PluginSyncMainToAudio(plugin, out);
+    plugin_sync_main_to_audio(plugin, out);
 
     for (u32 event_index = 0; event_index < event_count; event_index++) {
-        PluginProcessEvent(plugin, in->get(in, event_index));
+        plugin_process_event(plugin, in->get(in, event_index));
     }
 }
 
@@ -381,20 +438,20 @@ global_const clap_plugin_params_t extensionParams = {
 
 static bool plugin_state_save(const clap_plugin_t *_plugin, const clap_ostream_t *stream) {
     PluginData *plugin = (PluginData*)_plugin->plugin_data;
-    PluginSyncAudioToMain(plugin);
+    plugin_sync_audio_to_main(plugin);
 
-    u32 num_params_written = stream->write(stream, plugin->main_param_values, sizeof(float)*NParams);
+    u32 num_params_written = stream->write(stream, plugin->main_param_values, sizeof(float)*NPARAMS);
 
-    return num_params_written == sizeof(float) * NParams;
+    return num_params_written == sizeof(float) * NPARAMS;
 }
 
 static bool plugin_state_load(const clap_plugin_t *_plugin, const clap_istream_t *stream) {
     PluginData *plugin = (PluginData*)_plugin->plugin_data;
 
     // not thread safe
-    u32 num_params_read = stream->read(stream, plugin->main_param_values, sizeof(float)* NParams);
-    bool success = num_params_read == sizeof(float)*NParams;
-    for (u32 param_indedx = 0; param_indedx < NParams; param_indedx++) {
+    u32 num_params_read = stream->read(stream, plugin->main_param_values, sizeof(float)* NPARAMS);
+    bool success = num_params_read == sizeof(float)*NPARAMS;
+    for (u32 param_indedx = 0; param_indedx < NPARAMS; param_indedx++) {
         plugin->main_param_changed[param_indedx] = true;
     }
     return success;
@@ -445,36 +502,28 @@ static void CleanupDeviceWGL(GUI *gui) {
 }
 
 static void make_slider(PluginData *plugin, u32 param_index, const char* format) {
+    
     bool slider_has_changed = ImGui::SliderFloat(parameter_infos[param_index].name,
                                                  &plugin->main_param_values[param_index],
                                                  parameter_infos[param_index].min,
                                                  parameter_infos[param_index].max,
                                                  format);
 
-    bool mouse_is_pressed = ImGui::IsMouseDown(ImGuiMouseButton_Left);
-    bool mouse_is_dragging = ImGui::IsMouseDragging(ImGuiMouseButton_Left);
-
     if (slider_has_changed) {
-
-        if (!plugin->param_gesture_start[param_index]) {
-            plugin->param_gesture_start[param_index] = true;
-        }
-
-        plugin->main_param_changed[param_index] = true;
-        plugin->param_is_in_edit[param_index]   = true;
     
-        if (plugin->host_params && plugin->host_params->request_flush) {
-            plugin->host_params->request_flush(plugin->host);
+        if (!plugin->param_is_in_edit[param_index]) {
+            plugin->param_is_in_edit[param_index] = true;
+            
+            main_push_event_to_audio(plugin, param_index, GUI_GESTURE_BEGIN, plugin->main_param_values[param_index]);
         }
-
+        
+        main_push_event_to_audio(plugin, param_index, GUI_VALUE_CHANGE, plugin->main_param_values[param_index]);
+    
     } else {
         if (plugin->param_is_in_edit[param_index]) {
-            plugin->param_gesture_end[param_index] = true;
-            plugin->param_is_in_edit[param_index] = true;
-        }
-
-        if (plugin->host_params && plugin->host_params->request_flush) {
-            plugin->host_params->request_flush(plugin->host);
+            plugin->param_is_in_edit[param_index] = false;
+            
+            main_push_event_to_audio(plugin, param_index, GUI_GESTURE_END, plugin->main_param_values[param_index]);
         }
     }
 }
@@ -523,17 +572,17 @@ LRESULT CALLBACK GUIWindowProcedure(HWND window, UINT message, WPARAM wParam, LP
             ImGui::SetNextWindowPos(viewport->WorkPos);
             ImGui::SetNextWindowSize(viewport->WorkSize);
 
-            ImGuiIO& io = ImGui::GetIO();
+            // ImGuiIO& io = ImGui::GetIO();
 
             {
                 ImGui::Begin("Clap Echo");
 
-                make_slider(plugin, Time,      "%.2f ms");
-                make_slider(plugin, Feedback,  "%.2f");
-                make_slider(plugin, ToneFreq,  "%.1f Hz");
-                make_slider(plugin, Mix,       "%.2f");
-                make_slider(plugin, ModFreq,   "%.2f Hz");
-                make_slider(plugin, ModAmount, "%.2f");
+                make_slider(plugin, TIME,      "%.2f ms");
+                make_slider(plugin, FEEDBACK,  "%.2f");
+                make_slider(plugin, TONE_FREQ,  "%.1f Hz");
+                make_slider(plugin, MIX,       "%.2f");
+                make_slider(plugin, MOD_FREQ,   "%.2f Hz");
+                make_slider(plugin, MOD_AMT, "%.2f");
 
                 if (ImGui::Button("Clear buffers")) {
                     memset_float(plugin->echo.bufferL, 0, plugin->echo.buffer_size);
@@ -738,66 +787,75 @@ global_const clap_plugin_gui_t extensionGUI = {
 
 // main plugin class
 
-static void PluginSyncMainToAudio(PluginData *plugin, const clap_output_events_t *out) {
+static void plugin_sync_main_to_audio(PluginData *plugin, const clap_output_events_t *out) {
 
-    // not thread safe
-    for (u32 param_index = 0; param_index < NParams; param_index++) {
-
-        if (plugin->param_gesture_start[param_index]) {
-
-            plugin->param_gesture_start[param_index] = false;
-            clap_event_param_gesture_t event = {};
-            event.header.size = sizeof(event);
-            event.header.time = 0;
-            event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-            event.header.type = CLAP_EVENT_PARAM_GESTURE_BEGIN;
-            event.header.flags = 0;
-            event.param_id = param_index;
-            out->try_push(out, &event.header);
+    u32 read_index = plugin->main_to_audio_fifo.read_index.load();
+    u32 write_index = plugin->main_to_audio_fifo.write_index.load();
+        
+    while (read_index != write_index) {
+    
+        ParamEvent *plugin_event = &plugin->main_to_audio_fifo.events[read_index];
+        
+        switch (plugin_event->event_type) {
+            case GUI_VALUE_CHANGE: {
+                
+                handle_parameter_change(plugin, plugin_event->param_index, plugin_event->value);
+            
+                clap_event_param_value_t clap_event = {};
+                clap_event.header.size = sizeof(clap_event);
+                clap_event.header.time = 0;
+                clap_event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+                clap_event.header.type = CLAP_EVENT_PARAM_VALUE;
+                clap_event.header.flags = 0;
+                clap_event.param_id = plugin_event->param_index;
+                clap_event.cookie = NULL;
+                clap_event.note_id = -1;
+                clap_event.port_index = -1;
+                clap_event.channel = -1;
+                clap_event.key = -1;
+                clap_event.value = plugin_event->value;
+                out->try_push(out, &clap_event.header);                
+                break;
+            }
+            case GUI_GESTURE_BEGIN: {
+                clap_event_param_gesture_t clap_event = {};
+                clap_event.header.size = sizeof(clap_event);
+                clap_event.header.time = 0;
+                clap_event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+                clap_event.header.type = CLAP_EVENT_PARAM_GESTURE_BEGIN;
+                clap_event.header.flags = 0;
+                clap_event.param_id = plugin_event->param_index;
+                out->try_push(out, &clap_event.header);
+                break;
+            }
+            case GUI_GESTURE_END: {
+                clap_event_param_gesture_t clap_event = {};
+                clap_event.header.size = sizeof(clap_event);
+                clap_event.header.time = 0;
+                clap_event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+                clap_event.header.type = CLAP_EVENT_PARAM_GESTURE_END;
+                clap_event.header.flags = 0;
+                clap_event.param_id = plugin_event->param_index;
+                out->try_push(out, &clap_event.header);                
+                break;
+            }
+            default: { break; }
         }
-
-        if (plugin->main_param_changed[param_index]) {
-            plugin->audio_param_values[param_index] = plugin->main_param_values[param_index];
-            plugin->main_param_changed[param_index] = false;
-
-            clap_event_param_value_t event = {0};
-            event.header.size = sizeof(event);
-            event.header.time = 0;
-            event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-            event.header.type = CLAP_EVENT_PARAM_VALUE;
-            event.header.flags = 0;
-            event.param_id = param_index;
-            event.cookie = NULL;
-            event.note_id = -1;
-            event.port_index = -1;
-            event.channel = -1;
-            event.key = -1;
-            event.value = plugin->audio_param_values[param_index];
-            out->try_push(out, &event.header);
-        }
-
-        if (plugin->param_gesture_end[param_index]) {
-            plugin->param_gesture_end[param_index] = false;
-
-            plugin->param_gesture_start[param_index] = false;
-            clap_event_param_gesture_t event = {};
-            event.header.size = sizeof(event);
-            event.header.time = 0;
-            event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
-            event.header.type = CLAP_EVENT_PARAM_GESTURE_END;
-            event.header.flags = 0;
-            event.param_id = param_index;
-            out->try_push(out, &event.header);
-        }
+    
+    
+        read_index++;
+        read_index &= (FIFO_SIZE - 1);
     }
+    
+    plugin->main_to_audio_fifo.read_index.store(read_index);
 }
 
 
-static bool PluginSyncAudioToMain(PluginData *plugin) {
+static bool plugin_sync_audio_to_main(PluginData *plugin) {
     bool any_param_has_changed = false;
 
     // not thread safe
-    for (u32 param_index = 0; param_index < NParams; param_index++) {
+    for (u32 param_index = 0; param_index < NPARAMS; param_index++) {
         if (plugin->audio_param_changed[param_index]) {
             plugin->main_param_values[param_index] = plugin->audio_param_values[param_index];
             plugin->audio_param_changed[param_index] = false;
@@ -809,23 +867,25 @@ static bool PluginSyncAudioToMain(PluginData *plugin) {
 }
 
 
-static void PluginProcessEvent(PluginData *plugin, const clap_event_header_t *event) {
+
+static void plugin_process_event(PluginData *plugin, const clap_event_header_t *event) {
     if (event->space_id == CLAP_CORE_EVENT_SPACE_ID) {
         if (event->type == CLAP_EVENT_PARAM_VALUE) {
             const clap_event_param_value_t *param_event = (clap_event_param_value_t*)event;
 
-            u32 param_index = param_event->param_id;
-
-            plugin->audio_param_values[param_index]  = (float)param_event->value;
-            plugin->audio_param_changed[param_index] = true;
-            ramped_value_new_target(&plugin->ramped_params[param_index], (float)param_event->value, plugin->samplerate);
+            handle_parameter_change(plugin, param_event->param_id, (float)param_event->value);
         }
     }
 }
 
+static void handle_parameter_change(PluginData *plugin, u32 param_index, float value) {
+    
+    plugin->audio_param_values[param_index] = value;
+    ramped_value_new_target(&plugin->ramped_params[param_index], value, plugin->samplerate);
+}
 
 
-static void PluginRenderAudio(PluginData *plugin, u32 start, u32 end, float **inputs, float **outputs) {
+static void plugin_render_audio(PluginData *plugin, u32 start, u32 end, float **inputs, float **outputs) {
 
     u32 nsamples = end - start;
 
@@ -837,7 +897,7 @@ static void PluginRenderAudio(PluginData *plugin, u32 start, u32 end, float **in
 
     // generate ramped_value buffer
 
-    for (u32 param_index = 0; param_index < NParams; param_index++) {
+    for (u32 param_index = 0; param_index < NPARAMS; param_index++) {
         ramped_value_fill_buffer(&plugin->ramped_params[param_index], nsamples);
     }
 
@@ -845,54 +905,46 @@ static void PluginRenderAudio(PluginData *plugin, u32 start, u32 end, float **in
 
         Echo *echo = &plugin->echo;
 
-        if (plugin->ramped_params[Time].is_smoothing) {
-
-            float time_ms = plugin->ramped_params[Time].current_value;
-            time_ms = CLIP(time_ms, parameter_infos[Time].min, parameter_infos[Time].max);
-
-            float read_position = (float)echo->write_index - (time_ms * 0.001f * plugin->samplerate);
-
-            if (read_position < 0.0f) {
-                read_position += (float)echo->buffer_size;
-            }
-
-            u32 read_index = floorf(read_position);
-
-            echo->read_index = read_index;
-            echo->interpolation_coeff = read_position - (float)read_index;
+        if (plugin->ramped_params[TIME].is_smoothing) {
+            set_echo_delay(echo, plugin->ramped_params[TIME].value_buffer[index], plugin->samplerate);
         }
 
-        float feedback = plugin->ramped_params[Feedback].current_value;
-        float mix = plugin->ramped_params[Mix].current_value;
+        float feedback = plugin->ramped_params[FEEDBACK].value_buffer[index];
+        float mix = plugin->ramped_params[MIX].value_buffer[index];
 
+        i32 read_index1 = (i32)echo->write_index - (i32)echo->delay_in_samples;
+        i32 read_index2 = (i32)echo->write_index - (i32)echo->delay_in_samples - 1;
+        
+        if (read_index1 < 0 ) { read_index1 += echo->buffer_size; }
+        if (read_index2 < 0 ) { read_index2 += echo->buffer_size; }
+        
+        float sample1L = echo->bufferL[read_index1];
+        float sample1R = echo->bufferR[read_index1];
+        
+        float sample2L = echo->bufferL[read_index2];
+        float sample2R = echo->bufferR[read_index2];
 
-        u32 read_index = echo->read_index;
         float interpolation_coeff = echo->interpolation_coeff;
+        float delay_output_sampleL = sample1L * (1.0f - interpolation_coeff) + sample2L * interpolation_coeff;
+        float delay_output_sampleR = sample1R * (1.0f - interpolation_coeff) + sample2R * interpolation_coeff;
 
-        float sample1L = echo->bufferL[read_index];
-        float sample1R = echo->bufferR[read_index];
+        float input_sampleL = inputL[index];
+        float input_sampleR = inputR[index];
 
-        read_index++;
-        if (read_index >= echo->buffer_size) {
-            read_index = 0;
-        }
+        outputL[index] = delay_output_sampleL * mix + input_sampleL * (1.0f - mix);
+        outputR[index] = delay_output_sampleR * mix + input_sampleR * (1.0f - mix);
 
-        float sample2L = echo->bufferL[read_index];
-        float sample2R = echo->bufferR[read_index];
 
-        float delay_output_sampleL = sample1L * interpolation_coeff + sample2L * (1.0f - interpolation_coeff);
-        float delay_output_sampleR = sample1R * interpolation_coeff + sample2R * (1.0f - interpolation_coeff);
+        echo->bufferL[echo->write_index] = input_sampleL + delay_output_sampleL*feedback;
+        echo->bufferR[echo->write_index] = input_sampleR + delay_output_sampleR*feedback;
 
-        outputL[index] = delay_output_sampleL * mix + inputL[index] * (1.0f - mix);
-        outputR[index] = delay_output_sampleR * mix + inputR[index] * (1.0f - mix);
+        // echo->read_index++;
+        // if (echo->read_index == echo->buffer_size) {
+        //     echo->read_index = 0;
+        // }
 
-        echo->read_index = read_index;
-
-        echo->bufferL[echo->write_index] = inputL[index] + delay_output_sampleL*feedback;
-        echo->bufferR[echo->write_index] = inputR[index] + delay_output_sampleR*feedback;
         echo->write_index++;
-
-        if (echo->write_index >= echo->buffer_size) {
+        if (echo->write_index == echo->buffer_size) {
             echo->write_index = 0;
         }
 
@@ -904,7 +956,7 @@ static clap_process_status plugin_class_process(const clap_plugin *_plugin, cons
     PluginData *plugin = (PluginData*)_plugin->plugin_data;
 
 
-    PluginSyncMainToAudio(plugin, process->out_events);
+    plugin_sync_main_to_audio(plugin, process->out_events);
 
 
     assert(process->audio_outputs_count == 1);
@@ -923,9 +975,9 @@ static clap_process_status plugin_class_process(const clap_plugin *_plugin, cons
             if (event->time != current_frame_index) {
                 next_event_frame = event->time;
                 break;
-            }
-
-            PluginProcessEvent(plugin, event);
+            } 
+            
+            plugin_process_event(plugin, event);
             event_index++;
 
             if (event_index == input_event_count) {
@@ -934,7 +986,7 @@ static clap_process_status plugin_class_process(const clap_plugin *_plugin, cons
             }
         }
 
-        PluginRenderAudio(plugin, current_frame_index, next_event_frame, process->audio_inputs[0].data32, process->audio_outputs[0].data32);
+        plugin_render_audio(plugin, current_frame_index, next_event_frame, process->audio_inputs[0].data32, process->audio_outputs[0].data32);
         current_frame_index = next_event_frame;
     }
 
@@ -943,7 +995,7 @@ static clap_process_status plugin_class_process(const clap_plugin *_plugin, cons
 
 static bool plugin_class_init(const clap_plugin *_plugin)  {
     PluginData *plugin = (PluginData*)_plugin->plugin_data;
-    for (u32 param_index = 0; param_index < NParams; param_index++) {
+    for (u32 param_index = 0; param_index < NPARAMS; param_index++) {
         clap_param_info_t information = {0};
         extensionParams.get_info(_plugin, param_index, &information);
         plugin->main_param_values[param_index] = information.default_value;
@@ -966,21 +1018,24 @@ static bool plugin_class_activate(const clap_plugin *_plugin, double samplerate,
     plugin->min_buffer_size = min_buffer_size;
     plugin->max_buffer_size = max_buffer_size;
 
-    for (u32 param_index = 0; param_index < NParams; param_index++) {
+    for (u32 param_index = 0; param_index < NPARAMS; param_index++) {
         ramped_value_init(&plugin->ramped_params[param_index], parameter_infos[param_index].default_value, max_buffer_size);
     }
 
     {
         Echo *echo = &plugin->echo;
 
-        echo->buffer_size = (u32)(parameter_infos[Time].max * 0.001f * samplerate);
+        echo->buffer_size = (u32)(parameter_infos[TIME].max * 0.001f * samplerate);
         echo->bufferL = (float*)calloc(echo->buffer_size * 2, sizeof(float));
         assert(echo->bufferL && "Problem during echo buffer allocation");
 
         echo->bufferR = &echo->bufferL[echo->buffer_size];
 
         echo->write_index = 0;
-        echo->read_index = 0;
+        echo->delay_in_samples = 0;
+        
+        set_echo_delay(echo, plugin->audio_param_values[TIME], plugin->samplerate);
+
     }
 
     return true;

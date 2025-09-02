@@ -5,7 +5,7 @@ project(clap_echo VERSION 0.1 LANGUAGES C CXX)
 if (MSVC)
     add_compile_options(/MD)
 else(CLANG)
-    add_compile_options(-D_DLL -Wno-pragma-pack) # -ftime-trace=clang_logs.json)
+    add_compile_options(-D_DLL -Wall -Wextra -Wno-pragma-pack -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers) # -ftime-trace=clang_logs.json)
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
