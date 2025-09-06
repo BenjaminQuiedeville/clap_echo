@@ -30,15 +30,14 @@ typedef volatile i32 atomic_i32;
 #define global_const static const
 #define local_const static const
 
-
 static inline float dbtoa(float x) { return powf(10.0f, x * 0.05f); }
 static inline float atodb(float x) { return 20.0f * log10f(x); }
 
 #define memset_float(ptr, value, nelements)   memset(ptr, value, nelements*sizeof(float))
 #define memcpy_float(dest, source, nelements) memcpy(dest, source, nelements*sizeof(float))
+#define calloc_float(nelements)               (float*)calloc(nelements, sizeof(float))
 
 #define CLIP(x, min, max) (x > max ? max : x < min ? min : x)
-#define WRAP(x, min, max) (x < min ? x+(max-min) : x > max ? x-(max-min))
 
 enum ParamsIndex {
     TIME,
@@ -115,7 +114,7 @@ struct ParamInfo {
 
 global_const ParamInfo parameter_infos[NPARAMS] {
     {
-        .name = "Delay TIME", .min = 1.0f, .max = 2000.0f, .default_value = 300.0f,
+        .name = "Delay Time", .min = 1.0f, .max = 2000.0f, .default_value = 300.0f,
         .imgui_flags = ImGuiSliderFlags_AlwaysClamp,
         .clap_param_flags = CLAP_PARAM_IS_AUTOMATABLE
     },
@@ -171,6 +170,58 @@ struct LFO {
     float *sin_buffer = nullptr;
 };
 
+struct Echo {
+    float *bufferL = nullptr;
+    float *bufferR = nullptr;
+    u32 buffer_size = 0;
+    u32 write_index = 0;
+    float delay_frac = 0.0f;
+};
+
+struct PluginData {
+    clap_plugin_t             plugin                       = {};
+    const clap_host_t         *host                        = nullptr;
+    const clap_host_params_t  *host_params                 = nullptr;
+    float                     samplerate                   = 0.0f;
+    u32                       min_buffer_size              = 0;
+    u32                       max_buffer_size              = 0;
+
+    RampedValue               ramped_params[NPARAMS]       = {};
+
+    float                     audio_param_values[NPARAMS]  = {0};
+    float                     main_param_values[NPARAMS]   = {0};
+    bool                      param_is_in_edit[NPARAMS]    = {0};
+    
+    EventFIFO                 audio_to_main_fifo           = {};
+    EventFIFO                 main_to_audio_fifo           = {};
+
+    Echo    echo        = {};
+    Onepole tone_filter = {};
+    LFO     lfo         = {};
+    GUI     gui         = {};
+};
+
+
+static void plugin_sync_main_to_audio(PluginData *plugin, const clap_output_events_t *out);
+static void plugin_sync_audio_to_main(PluginData *plugin);
+static void plugin_process_event(PluginData *plugin, const clap_event_header_t *event);
+static void handle_parameter_change(PluginData *plugin, u32 param_index, float value);
+
+
+static void main_push_event_to_audio(PluginData *plugin, u32 param_index, u32 event_type, float value) {
+
+    u32 write_index = plugin->main_to_audio_fifo.write_index.load();
+    
+    ParamEvent *event = &plugin->main_to_audio_fifo.events[write_index];
+    event->param_index = param_index; 
+    event->event_type = event_type;
+    event->value = value;
+    
+    plugin->main_to_audio_fifo.write_index.fetch_add(1);
+    plugin->main_to_audio_fifo.write_index.fetch_and(FIFO_SIZE-1);
+
+}
+
 static inline void LFO_set_frequency(LFO *lfo, float freq, float samplerate) {
     lfo->param = 2.0f * sin(M_PI * freq/samplerate);
 }
@@ -193,63 +244,6 @@ static inline void LFO_step_and_store(LFO *lfo, u32 index) {
     lfo->cos_buffer[index] = lfo->cos_value;
     lfo->sin_buffer[index] = lfo->sin_value;
 }
-
-struct Echo {
-    float *bufferL = nullptr;
-    float *bufferR = nullptr;
-    u32 buffer_size = 0;
-    u32 write_index = 0;
-    float delay_frac = 0.0f;
-};
-
-struct PluginData {
-    clap_plugin_t             plugin                       = {};
-    const clap_host_t         *host                        = nullptr;
-    const clap_host_params_t  *host_params                 = nullptr;
-    float                     samplerate                   = 0.0f;
-    u32                       min_buffer_size              = 0;
-    u32                       max_buffer_size              = 0;
-
-    RampedValue               ramped_params[NPARAMS]       = {};
-
-    float                     audio_param_values[NPARAMS]  = {0};
-    float                     main_param_values[NPARAMS]   = {0};
-    bool                      audio_param_changed[NPARAMS] = {0};
-    bool                      main_param_changed[NPARAMS]  = {0};
-    bool                      param_gesture_start[NPARAMS] = {0};
-    bool                      param_gesture_end[NPARAMS]   = {0};
-    bool                      param_is_in_edit[NPARAMS]    = {0};
-    
-    EventFIFO                 audio_to_main_fifo           = {};
-    EventFIFO                 main_to_audio_fifo           = {};
-
-    Echo    echo        = {};
-    Onepole tone_filter = {};
-    LFO     lfo         = {};
-    GUI     gui         = {};
-};
-
-
-static void plugin_sync_main_to_audio(PluginData *plugin, const clap_output_events_t *out);
-static bool plugin_sync_audio_to_main(PluginData *plugin);
-static void plugin_process_event(PluginData *plugin, const clap_event_header_t *event);
-static void handle_parameter_change(PluginData *plugin, u32 param_index, float value);
-
-
-static void main_push_event_to_audio(PluginData *plugin, u32 param_index, u32 event_type, float value) {
-
-    u32 write_index = plugin->main_to_audio_fifo.write_index.load();
-    
-    ParamEvent *event = &plugin->main_to_audio_fifo.events[write_index];
-    event->param_index = param_index; 
-    event->event_type = event_type;
-    event->value = value;
-    
-    plugin->main_to_audio_fifo.write_index.fetch_add(1);
-    plugin->main_to_audio_fifo.write_index.fetch_and(FIFO_SIZE-1);
-
-}
-
 
 static inline void onepole_set_frequency(Onepole *f, float freq, float samplerate) {
     f->b0 = sinf(M_PI / samplerate * freq);
@@ -285,7 +279,7 @@ static void ramped_value_init(RampedValue *value, float init_value, u32 value_bu
     value->step_height = 0.0f;
     value->current_value = init_value;
     value->norm_value = 0.0f;
-    value->value_buffer = (float*)calloc(value_buffer_size, sizeof(float));
+    value->value_buffer = calloc_float(value_buffer_size);
     value->is_smoothing = false;
 }
 
@@ -414,8 +408,7 @@ static bool param_get_value(const clap_plugin_t *_plugin, clap_id id, double *va
     if (param_index >= NPARAMS) { return false; }
 
     // not thread safe
-    *value = plugin->main_param_changed[param_index] ? (double)plugin->main_param_values[param_index]
-                                                     : (double)plugin->audio_param_values[param_index];
+    *value = (double)plugin->audio_param_values[param_index];
     return true;
 }
 
@@ -494,9 +487,6 @@ static bool plugin_state_load(const clap_plugin_t *_plugin, const clap_istream_t
     // not thread safe
     u32 num_params_read = stream->read(stream, plugin->main_param_values, sizeof(float)* NPARAMS);
     bool success = num_params_read == sizeof(float)*NPARAMS;
-    for (u32 param_indedx = 0; param_indedx < NPARAMS; param_indedx++) {
-        plugin->main_param_changed[param_indedx] = true;
-    }
     return success;
 }
 
@@ -507,7 +497,6 @@ global_const clap_plugin_state_t extensionState = {
 
 
 // GUI
-
 global_const u32 GUI_WIDTH = 300;
 global_const u32 GUI_HEIGHT = 200;
 global_const char *GUI_API = CLAP_WINDOW_API_WIN32;
@@ -589,18 +578,11 @@ LRESULT CALLBACK GUIWindowProcedure(HWND window, UINT message, WPARAM wParam, LP
     }
 
     switch (message) {
-        // case WM_MOUSEMOVE: {
-        //     break;
-        // }
-        // case WM_LBUTTONDOWN: {
-        //     break;
-        // }
-        // case WM_LBUTTONUP: {
-        //     break;
-        // }
         case WM_TIMER: {
             ImGui::SetCurrentContext(gui->imgui_context);
             wglMakeCurrent(gui->device_context, gui->opengl_context);
+    
+            plugin_sync_audio_to_main(plugin);
 
             if (IsIconic(gui->window)) {
                 Sleep(10);
@@ -618,7 +600,8 @@ LRESULT CALLBACK GUIWindowProcedure(HWND window, UINT message, WPARAM wParam, LP
             // ImGuiIO& io = ImGui::GetIO();
 
             {
-                ImGui::Begin("Clap Echo");
+                bool open = true;
+                ImGui::Begin("Clap Echo", &open, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoDecoration);
 
                 make_slider(plugin, TIME,      "%.2f ms");
                 make_slider(plugin, FEEDBACK,  "%.2f");
@@ -780,7 +763,6 @@ static bool show_gui(const clap_plugin_t *_plugin) {
 
     SetTimer(gui->window, 1, 30, nullptr);
 
-
     return true;
 }
 
@@ -885,7 +867,6 @@ static void plugin_sync_main_to_audio(PluginData *plugin, const clap_output_even
             default: { break; }
         }
     
-    
         read_index++;
         read_index &= (FIFO_SIZE - 1);
     }
@@ -894,22 +875,12 @@ static void plugin_sync_main_to_audio(PluginData *plugin, const clap_output_even
 }
 
 
-static bool plugin_sync_audio_to_main(PluginData *plugin) {
-    bool any_param_has_changed = false;
+static void plugin_sync_audio_to_main(PluginData *plugin) {
 
-    // not thread safe
     for (u32 param_index = 0; param_index < NPARAMS; param_index++) {
-        if (plugin->audio_param_changed[param_index]) {
-            plugin->main_param_values[param_index] = plugin->audio_param_values[param_index];
-            plugin->audio_param_changed[param_index] = false;
-            any_param_has_changed = true;
-        }
+        plugin->main_param_values[param_index] = plugin->audio_param_values[param_index];
     }
-
-    return any_param_has_changed;
 }
-
-
 
 static void plugin_process_event(PluginData *plugin, const clap_event_header_t *event) {
     if (event->space_id == CLAP_CORE_EVENT_SPACE_ID) {
@@ -962,7 +933,7 @@ static clap_process_status plugin_class_process(const clap_plugin *_plugin, cons
             }
         }
 
-        {        
+        { // do the audio render 
             const u32 nsamples = next_event_frame - current_frame_index;
         
             float *inputL = &process->audio_inputs[0].data32[0][current_frame_index];
@@ -1076,7 +1047,7 @@ static bool plugin_class_activate(const clap_plugin *_plugin, double samplerate,
         Echo *echo = &plugin->echo;
 
         echo->buffer_size = (u32)(parameter_infos[TIME].max * 0.001f * samplerate);
-        echo->bufferL = (float*)calloc(echo->buffer_size * 2, sizeof(float));
+        echo->bufferL = calloc_float(echo->buffer_size * 2);
         assert(echo->bufferL && "Problem during echo buffer allocation");
 
         echo->bufferR = &echo->bufferL[echo->buffer_size];
@@ -1090,7 +1061,7 @@ static bool plugin_class_activate(const clap_plugin *_plugin, double samplerate,
     onepole_set_frequency(&plugin->tone_filter, plugin->audio_param_values[TONE_FREQ], samplerate);
 
     LFO_set_frequency(&plugin->lfo, plugin->audio_param_values[MOD_FREQ], samplerate);
-    plugin->lfo.cos_buffer = (float*)calloc(max_buffer_size*2, sizeof(float));
+    plugin->lfo.cos_buffer = calloc_float(max_buffer_size*2);
     plugin->lfo.sin_buffer = plugin->lfo.cos_buffer + max_buffer_size;
     plugin->lfo.cos_value = 0.5f;
     plugin->lfo.sin_value = 0.0f;

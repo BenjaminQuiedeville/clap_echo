@@ -3,9 +3,9 @@ cmake_minimum_required(VERSION 3.22)
 project(clap_echo VERSION 0.1 LANGUAGES C CXX)
 
 if (MSVC)
-    add_compile_options(/MD)
+    add_compile_options(/arch:AVX2 /W3 /MD)
 else(CLANG)
-    add_compile_options(-D_DLL -Wall -Wextra -Wno-pragma-pack -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers) # -ftime-trace=clang_logs.json)
+    add_compile_options(-D_DLL -mavx2 -fno-math-errno -Wall -Wextra -Wno-pragma-pack -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers) # -ftime-trace=clang_logs.json)
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
