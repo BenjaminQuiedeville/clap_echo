@@ -20,13 +20,13 @@ build_working_dir:      %PROJECT_CONFIG_DIR%
 key_binding:            F5
 
 
-[DebugRelease Build Python]   # <- command name. Can be arbitrary
+[DebugRelease Build]   # <- command name. Can be arbitrary
 build_command:          cmake --build build --config RelWithDebInfo  # should be an executable or a script
 build_working_dir:      %PROJECT_CONFIG_DIR%
 # timeout_in_seconds:     5             # if you don't want a timeout, don't specify it
 key_binding:            Ctrl-F5
 
-[DebugRelease Build Python]   # <- command name. Can be arbitrary
+[Release Build]   # <- command name. Can be arbitrary
 build_command:          cmake --build build --config Release # should be an executable or a script
 build_working_dir:      %PROJECT_CONFIG_DIR%
 # timeout_in_seconds:     5             # if you don't want a timeout, don't specify it

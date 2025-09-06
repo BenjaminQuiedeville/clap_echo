@@ -2,9 +2,11 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
-#include <math.h>
 #include <stdlib.h>
 #include <atomic>
+
+#define _USE_MATH_DEFINES
+#include <math.h>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -29,8 +31,6 @@ typedef volatile i32 atomic_i32;
 #define local_const static const
 
 
-// ajouter des traitement atomiques
-
 static inline float dbtoa(float x) { return powf(10.0f, x * 0.05f); }
 static inline float atodb(float x) { return 20.0f * log10f(x); }
 
@@ -38,7 +38,7 @@ static inline float atodb(float x) { return 20.0f * log10f(x); }
 #define memcpy_float(dest, source, nelements) memcpy(dest, source, nelements*sizeof(float))
 
 #define CLIP(x, min, max) (x > max ? max : x < min ? min : x)
-
+#define WRAP(x, min, max) (x < min ? x+(max-min) : x > max ? x-(max-min))
 
 enum ParamsIndex {
     TIME,
@@ -59,19 +59,15 @@ global_const char *const plugin_features[4] = {
 
 global_const clap_plugin_descriptor_t pluginDescriptor {
     .clap_version = CLAP_VERSION_INIT,
-    .id           = "hermes140.clap_echo",       // eg: "com.u-he.diva", mandatory
-    .name         = "Clap echo",                 // eg: "Diva", mandatory
-    .vendor       = "Hermes140",                 // eg: "u-he"
-    .url          = "",                          // eg: "https://u-he.com/products/diva/"
-    .manual_url   = "",                          // eg: "https://dl.u-he.com/manuals/plugins/diva/Diva-user-guide.pdf"
-    .support_url  = "",                          // eg: "https://u-he.com/support/"
-    .version      = "0.1",                       // eg: "1.4.4"
-    .description  = "Simple clap echo",          // eg: "The spirit of analogue"
+    .id           = "hermes140.clap_echo",
+    .name         = "Clap echo",
+    .vendor       = "Hermes140",
+    .url          = "",
+    .manual_url   = "",
+    .support_url  = "",
+    .version      = "0.1",
+    .description  = "Simple clap echo",
 
-    // Arbitrary list of keywords.
-    // They can be matched by the host indexer and used to classify the plugin.
-    // The array of pointers must be null terminated.
-    // For some standard features see plugin-features.h
     .features = plugin_features,
 };
 
@@ -124,7 +120,7 @@ global_const ParamInfo parameter_infos[NPARAMS] {
         .clap_param_flags = CLAP_PARAM_IS_AUTOMATABLE
     },
     {
-        .name = "FEEDBACK", .min = 0.0f, .max = 1.0f, .default_value = 0.5f,
+        .name = "Feedback", .min = 0.0f, .max = 1.0f, .default_value = 0.5f,
         .imgui_flags = ImGuiSliderFlags_AlwaysClamp,
         .clap_param_flags = CLAP_PARAM_IS_AUTOMATABLE
     },
@@ -134,7 +130,7 @@ global_const ParamInfo parameter_infos[NPARAMS] {
         .clap_param_flags = CLAP_PARAM_IS_AUTOMATABLE
     },
     {
-        .name = "MIX", .min = 0.0f, .max = 1.0f, .default_value = 0.5f,
+        .name = "Mix", .min = 0.0f, .max = 1.0f, .default_value = 0.5f,
         .imgui_flags = ImGuiSliderFlags_AlwaysClamp,
         .clap_param_flags = CLAP_PARAM_IS_AUTOMATABLE
     },
@@ -160,14 +156,50 @@ struct GUI {
     u32 height = 0;
 };
 
+struct Onepole {
+    float b0 = 0.0f;
+    float a1 = 0.0f;
+    float y1L = 0.0f; 
+    float y1R = 0.0f;
+};
+
+struct LFO {
+    float cos_value = 0.5f;
+    float sin_value = 0.0f;
+    float param = 0.0f;
+    float *cos_buffer = nullptr;
+    float *sin_buffer = nullptr;
+};
+
+static inline void LFO_set_frequency(LFO *lfo, float freq, float samplerate) {
+    lfo->param = 2.0f * sin(M_PI * freq/samplerate);
+}
+
+static inline void LFO_fill_buffer(LFO *lfo, u32 nsamples) {
+
+    for (u32 index = 0; index < nsamples; index++) {
+        lfo->cos_value -= lfo->param * lfo->sin_value;
+        lfo->sin_value += lfo->param * lfo->cos_value;
+        
+        lfo->cos_buffer[index] = lfo->cos_value;
+        lfo->sin_buffer[index] = lfo->sin_value;
+    }
+}
+
+static inline void LFO_step_and_store(LFO *lfo, u32 index) {
+    lfo->cos_value -= lfo->param * lfo->sin_value;
+    lfo->sin_value += lfo->param * lfo->cos_value;
+
+    lfo->cos_buffer[index] = lfo->cos_value;
+    lfo->sin_buffer[index] = lfo->sin_value;
+}
 
 struct Echo {
     float *bufferL = nullptr;
     float *bufferR = nullptr;
     u32 buffer_size = 0;
     u32 write_index = 0;
-    u32 delay_in_samples = 0;
-    float interpolation_coeff = 0.0f;
+    float delay_frac = 0.0f;
 };
 
 struct PluginData {
@@ -191,17 +223,17 @@ struct PluginData {
     EventFIFO                 audio_to_main_fifo           = {};
     EventFIFO                 main_to_audio_fifo           = {};
 
-    Echo echo = {};
-    GUI gui   = {};
+    Echo    echo        = {};
+    Onepole tone_filter = {};
+    LFO     lfo         = {};
+    GUI     gui         = {};
 };
 
 
 static void plugin_sync_main_to_audio(PluginData *plugin, const clap_output_events_t *out);
 static bool plugin_sync_audio_to_main(PluginData *plugin);
 static void plugin_process_event(PluginData *plugin, const clap_event_header_t *event);
-static void plugin_render_audio(PluginData *plugin, u32 start, u32 end, float **inputs, float **outputs);
 static void handle_parameter_change(PluginData *plugin, u32 param_index, float value);
-
 
 
 static void main_push_event_to_audio(PluginData *plugin, u32 param_index, u32 event_type, float value) {
@@ -219,20 +251,31 @@ static void main_push_event_to_audio(PluginData *plugin, u32 param_index, u32 ev
 }
 
 
-void set_echo_delay(Echo* echo, float delay_ms, float samplerate) {
-    
+static inline void onepole_set_frequency(Onepole *f, float freq, float samplerate) {
+    f->b0 = sinf(M_PI / samplerate * freq);
+    f->a1 = 1.0f - f->b0;
+}
+
+static inline void set_echo_delay(Echo* echo, float delay_ms, float samplerate) {
     delay_ms = CLIP(delay_ms, parameter_infos[TIME].min, parameter_infos[TIME].max);
+    echo->delay_frac = delay_ms * 0.001f * samplerate;
+}
 
-    float delay_frac = delay_ms * 0.001f * samplerate;
+static inline float echo_read_sample(float *echo_buffer, u32 buffer_size, float read_position_frac) {
 
-    // if (read_position < 0.0f) {
-    //     read_position += (float)echo->buffer_size;
-    // }
+    if (read_position_frac < 0.0f) { read_position_frac += (float)buffer_size; }
 
-    u32 delay_in_samples = floorf(delay_frac);
-
-    echo->delay_in_samples = delay_in_samples;
-    echo->interpolation_coeff = delay_frac - (float)delay_in_samples;
+    i32 read_index1 = (i32)read_position_frac;
+    i32 read_index2 = read_index1 - 1;
+    
+    if (read_index2 < 0) { read_index2 += buffer_size; }
+    
+    float interp_coeff = read_position_frac - (float)read_index1;
+    float sample1 = echo_buffer[read_index1];
+    float sample2 = echo_buffer[read_index2];
+    
+    float output_sample = sample1 * (1.0f - interp_coeff) + sample2 * interp_coeff;
+    return output_sample;
 }
 
 
@@ -885,73 +928,6 @@ static void handle_parameter_change(PluginData *plugin, u32 param_index, float v
 }
 
 
-static void plugin_render_audio(PluginData *plugin, u32 start, u32 end, float **inputs, float **outputs) {
-
-    u32 nsamples = end - start;
-
-    float *inputL = &inputs[0][start];
-    float *inputR = &inputs[1][start];
-
-    float *outputL = &outputs[0][start];
-    float *outputR = &outputs[1][start];
-
-    // generate ramped_value buffer
-
-    for (u32 param_index = 0; param_index < NPARAMS; param_index++) {
-        ramped_value_fill_buffer(&plugin->ramped_params[param_index], nsamples);
-    }
-
-    for (u32 index = 0; index < nsamples; index++) {
-
-        Echo *echo = &plugin->echo;
-
-        if (plugin->ramped_params[TIME].is_smoothing) {
-            set_echo_delay(echo, plugin->ramped_params[TIME].value_buffer[index], plugin->samplerate);
-        }
-
-        float feedback = plugin->ramped_params[FEEDBACK].value_buffer[index];
-        float mix = plugin->ramped_params[MIX].value_buffer[index];
-
-        i32 read_index1 = (i32)echo->write_index - (i32)echo->delay_in_samples;
-        i32 read_index2 = (i32)echo->write_index - (i32)echo->delay_in_samples - 1;
-        
-        if (read_index1 < 0 ) { read_index1 += echo->buffer_size; }
-        if (read_index2 < 0 ) { read_index2 += echo->buffer_size; }
-        
-        float sample1L = echo->bufferL[read_index1];
-        float sample1R = echo->bufferR[read_index1];
-        
-        float sample2L = echo->bufferL[read_index2];
-        float sample2R = echo->bufferR[read_index2];
-
-        float interpolation_coeff = echo->interpolation_coeff;
-        float delay_output_sampleL = sample1L * (1.0f - interpolation_coeff) + sample2L * interpolation_coeff;
-        float delay_output_sampleR = sample1R * (1.0f - interpolation_coeff) + sample2R * interpolation_coeff;
-
-        float input_sampleL = inputL[index];
-        float input_sampleR = inputR[index];
-
-        outputL[index] = delay_output_sampleL * mix + input_sampleL * (1.0f - mix);
-        outputR[index] = delay_output_sampleR * mix + input_sampleR * (1.0f - mix);
-
-
-        echo->bufferL[echo->write_index] = input_sampleL + delay_output_sampleL*feedback;
-        echo->bufferR[echo->write_index] = input_sampleR + delay_output_sampleR*feedback;
-
-        // echo->read_index++;
-        // if (echo->read_index == echo->buffer_size) {
-        //     echo->read_index = 0;
-        // }
-
-        echo->write_index++;
-        if (echo->write_index == echo->buffer_size) {
-            echo->write_index = 0;
-        }
-
-    }
-}
-
-
 static clap_process_status plugin_class_process(const clap_plugin *_plugin, const clap_process_t *process) {
     PluginData *plugin = (PluginData*)_plugin->plugin_data;
 
@@ -986,7 +962,81 @@ static clap_process_status plugin_class_process(const clap_plugin *_plugin, cons
             }
         }
 
-        plugin_render_audio(plugin, current_frame_index, next_event_frame, process->audio_inputs[0].data32, process->audio_outputs[0].data32);
+        {        
+            const u32 nsamples = next_event_frame - current_frame_index;
+        
+            float *inputL = &process->audio_inputs[0].data32[0][current_frame_index];
+            float *inputR = &process->audio_inputs[0].data32[1][current_frame_index];
+        
+            float *outputL = &process->audio_outputs[0].data32[0][current_frame_index];
+            float *outputR = &process->audio_outputs[0].data32[1][current_frame_index];
+        
+            // generate ramped_value buffer
+        
+            for (u32 param_index = 0; param_index < NPARAMS; param_index++) {
+                ramped_value_fill_buffer(&plugin->ramped_params[param_index], nsamples);
+            }
+        
+            if (plugin->ramped_params[MOD_FREQ].is_smoothing) {
+                for (u32 index = 0; index < nsamples; index++) {
+                    LFO_set_frequency(&plugin->lfo, plugin->ramped_params[MOD_FREQ].value_buffer[index], plugin->samplerate);
+                    LFO_step_and_store(&plugin->lfo, index);
+                }
+            } else {
+                LFO_fill_buffer(&plugin->lfo, nsamples);
+            }
+        
+        
+            for (u32 index = 0; index < nsamples; index++) {
+        
+                Echo *echo = &plugin->echo;
+        
+                if (plugin->ramped_params[TIME].is_smoothing) {
+                    set_echo_delay(echo, plugin->ramped_params[TIME].value_buffer[index], plugin->samplerate);
+                }
+        
+                if (plugin->ramped_params[TONE_FREQ].is_smoothing) {
+                    onepole_set_frequency(&plugin->tone_filter, plugin->ramped_params[TONE_FREQ].value_buffer[index], plugin->samplerate);
+                }
+        
+                float feedback = plugin->ramped_params[FEEDBACK].value_buffer[index];
+                float mix = plugin->ramped_params[MIX].value_buffer[index];
+                
+                local_const float amout_scale = 200.0f;
+                float mod_amount = plugin->ramped_params[MOD_AMT].value_buffer[index] * amout_scale;
+                float mod_valueL = plugin->lfo.cos_buffer[index] * mod_amount;
+                float mod_valueR = plugin->lfo.sin_buffer[index] * mod_amount;
+                
+                float read_index_frac = (float)echo->write_index - echo->delay_frac;
+                float output_sampleL = echo_read_sample(echo->bufferL, echo->buffer_size, read_index_frac - mod_valueL);
+                float output_sampleR = echo_read_sample(echo->bufferR, echo->buffer_size, read_index_frac - mod_valueR);
+        
+                {
+                    float b0 = plugin->tone_filter.b0;
+                    float a1 = plugin->tone_filter.a1;
+                    
+                    output_sampleL = output_sampleL * b0 + plugin->tone_filter.y1L * a1;
+                    plugin->tone_filter.y1L = output_sampleL;
+                    
+                    output_sampleR = output_sampleR * b0 + plugin->tone_filter.y1R * a1;
+                    plugin->tone_filter.y1R = output_sampleR;        
+                }
+                
+                float input_sampleL = inputL[index];
+                float input_sampleR = inputR[index];
+        
+                outputL[index] = output_sampleL * mix + input_sampleL * (1.0f - mix);
+                outputR[index] = output_sampleR * mix + input_sampleR * (1.0f - mix);
+        
+                echo->bufferL[echo->write_index] = input_sampleL + output_sampleL*feedback;
+                echo->bufferR[echo->write_index] = input_sampleR + output_sampleR*feedback;
+        
+                echo->write_index++;
+                if (echo->write_index == echo->buffer_size) {
+                    echo->write_index = 0;
+                }
+            }
+        }
         current_frame_index = next_event_frame;
     }
 
@@ -1032,12 +1082,19 @@ static bool plugin_class_activate(const clap_plugin *_plugin, double samplerate,
         echo->bufferR = &echo->bufferL[echo->buffer_size];
 
         echo->write_index = 0;
-        echo->delay_in_samples = 0;
+        echo->delay_frac = 0;
         
-        set_echo_delay(echo, plugin->audio_param_values[TIME], plugin->samplerate);
-
+        set_echo_delay(echo, plugin->audio_param_values[TIME], samplerate);
     }
 
+    onepole_set_frequency(&plugin->tone_filter, plugin->audio_param_values[TONE_FREQ], samplerate);
+
+    LFO_set_frequency(&plugin->lfo, plugin->audio_param_values[MOD_FREQ], samplerate);
+    plugin->lfo.cos_buffer = (float*)calloc(max_buffer_size*2, sizeof(float));
+    plugin->lfo.sin_buffer = plugin->lfo.cos_buffer + max_buffer_size;
+    plugin->lfo.cos_value = 0.5f;
+    plugin->lfo.sin_value = 0.0f;
+    
     return true;
 }
 
@@ -1048,6 +1105,10 @@ static void plugin_class_deactivate(const clap_plugin *_plugin) {
     free(plugin->echo.bufferL);
     plugin->echo.bufferL = nullptr;
     plugin->echo.bufferR = nullptr;
+    
+    free(plugin->lfo.cos_buffer);
+    plugin->lfo.cos_buffer = nullptr;
+    plugin->lfo.sin_buffer = nullptr;
 
 }
 
@@ -1093,19 +1154,10 @@ global_const clap_plugin_t pluginClass {
 
 u32 get_plugin_count(const clap_plugin_factory_t *factory) { return 1; }
 
-// Retrieves a plugin descriptor by its index.
-// Returns null in case of error.
-// The descriptor must not be freed.
-// [thread-safe]
 const clap_plugin_descriptor_t* get_plugin_descriptor(const clap_plugin_factory_t *factory, u32 index) {
     return index == 0 ? &pluginDescriptor : nullptr;
 }
 
-// Create a clap_plugin by its plugin_id.
-// The returned pointer must be freed by calling plugin->destroy(plugin);
-// The plugin is not allowed to use the host callbacks in the create method.
-// Returns null in case of error.
-// [thread-safe]
 const clap_plugin_t* create_plugin(const clap_plugin_factory_t *factory, const clap_host_t *host, const char *pluginID) {
     if (!clap_version_is_compatible(host->clap_version) || strcmp(pluginID, pluginDescriptor.id)) {
         return nullptr;
@@ -1120,18 +1172,7 @@ const clap_plugin_t* create_plugin(const clap_plugin_factory_t *factory, const c
 
 global_const clap_plugin_factory_t pluginFactory {
     .get_plugin_count = get_plugin_count,
-
-    // Retrieves a plugin descriptor by its index.
-    // Returns null in case of error.
-    // The descriptor must not be freed.
-    // [thread-safe]
     .get_plugin_descriptor = get_plugin_descriptor,
-
-    // Create a clap_plugin by its plugin_id.
-    // The returned pointer must be freed by calling plugin->destroy(plugin);
-    // The plugin is not allowed to use the host callbacks in the create method.
-    // Returns null in case of error.
-    // [thread-safe]
     .create_plugin = create_plugin,
 };
 
