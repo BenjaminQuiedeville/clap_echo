@@ -539,7 +539,7 @@ static void make_slider(PluginData *plugin, u32 param_index, const char* format)
                                                  &plugin->main_param_values[param_index],
                                                  parameter_infos[param_index].min,
                                                  parameter_infos[param_index].max,
-                                                 format);
+                                                 format, parameter_infos[param_index].imgui_flags);
 
     if (slider_has_changed) {
     
