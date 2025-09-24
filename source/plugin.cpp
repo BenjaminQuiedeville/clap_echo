@@ -1,5 +1,4 @@
 #include <string>
-#include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
 #include <stdlib.h>
@@ -12,12 +11,10 @@
 #include <windows.h>
 #include <windowsx.h>
 
-#include <GL/gl.h>
-
 #include <clap/clap.h>
 
+#include <GL/gl.h>
 #include "../imgui/imgui.h"
-
 #include "../imgui/backends/imgui_impl_opengl3.h"
 #include "../imgui/backends/imgui_impl_win32.h"
 
@@ -25,7 +22,6 @@ typedef uint32_t u32;
 typedef int32_t i32;
 typedef uint64_t u64;
 typedef int64_t i64;
-typedef volatile i32 atomic_i32;
 
 #define global_const static const
 #define local_const static const
@@ -33,8 +29,8 @@ typedef volatile i32 atomic_i32;
 static inline float dbtoa(float x) { return powf(10.0f, x * 0.05f); }
 static inline float atodb(float x) { return 20.0f * log10f(x); }
 
-#define memset_float(ptr, value, nelements)   memset(ptr, value, nelements*sizeof(float))
-#define memcpy_float(dest, source, nelements) memcpy(dest, source, nelements*sizeof(float))
+#define memset_float(ptr, value, nelements)   memset(ptr, value, (nelements)*sizeof(float))
+#define memcpy_float(dest, source, nelements) memcpy(dest, source, (nelements)*sizeof(float))
 #define calloc_float(nelements)               (float*)calloc(nelements, sizeof(float))
 
 #define CLIP(x, min, max) (x > max ? max : x < min ? min : x)
@@ -112,7 +108,7 @@ struct ParamInfo {
     u32 clap_param_flags = 0;
 };
 
-global_const ParamInfo parameter_infos[NPARAMS] {
+global_const ParamInfo parameter_infos[NPARAMS] = {
     {
         .name = "Delay Time", .min = 1.0f, .max = 2000.0f, .default_value = 300.0f,
         .imgui_flags = ImGuiSliderFlags_AlwaysClamp,
@@ -192,7 +188,6 @@ struct PluginData {
     float                     main_param_values[NPARAMS]   = {0};
     bool                      param_is_in_edit[NPARAMS]    = {0};
     
-    EventFIFO                 audio_to_main_fifo           = {};
     EventFIFO                 main_to_audio_fifo           = {};
 
     Echo    echo        = {};
@@ -219,7 +214,6 @@ static void main_push_event_to_audio(PluginData *plugin, u32 param_index, u32 ev
     
     plugin->main_to_audio_fifo.write_index.fetch_add(1);
     plugin->main_to_audio_fifo.write_index.fetch_and(FIFO_SIZE-1);
-
 }
 
 static inline void LFO_set_frequency(LFO *lfo, float freq, float samplerate) {
@@ -605,17 +599,15 @@ LRESULT CALLBACK GUIWindowProcedure(HWND window, UINT message, WPARAM wParam, LP
 
                 make_slider(plugin, TIME,      "%.2f ms");
                 make_slider(plugin, FEEDBACK,  "%.2f");
-                make_slider(plugin, TONE_FREQ,  "%.1f Hz");
+                make_slider(plugin, TONE_FREQ, "%.1f Hz");
                 make_slider(plugin, MIX,       "%.2f");
-                make_slider(plugin, MOD_FREQ,   "%.2f Hz");
-                make_slider(plugin, MOD_AMT, "%.2f");
+                make_slider(plugin, MOD_FREQ,  "%.2f Hz");
+                make_slider(plugin, MOD_AMT,   "%.2f");
 
                 if (ImGui::Button("Clear buffers")) {
-                    memset_float(plugin->echo.bufferL, 0, plugin->echo.buffer_size);
-                    memset_float(plugin->echo.bufferR, 0, plugin->echo.buffer_size);
+                    memset_float(plugin->echo.bufferL, 0, plugin->echo.buffer_size*2);
                 }
                 
-
                 ImGui::End();
             }
 
@@ -978,6 +970,7 @@ static clap_process_status plugin_class_process(const clap_plugin *_plugin, cons
                 float mod_valueL = plugin->lfo.cos_buffer[index] * mod_amount;
                 float mod_valueR = plugin->lfo.sin_buffer[index] * mod_amount;
                 
+                // bien vérifier que la tete de lecture sorte pas du buffer (mettre des asserts)
                 float read_index_frac = (float)echo->write_index - echo->delay_frac;
                 float output_sampleL = echo_read_sample(echo->bufferL, echo->buffer_size, read_index_frac - mod_valueL);
                 float output_sampleR = echo_read_sample(echo->bufferR, echo->buffer_size, read_index_frac - mod_valueR);
@@ -998,7 +991,8 @@ static clap_process_status plugin_class_process(const clap_plugin *_plugin, cons
         
                 outputL[index] = output_sampleL * mix + input_sampleL * (1.0f - mix);
                 outputR[index] = output_sampleR * mix + input_sampleR * (1.0f - mix);
-        
+                
+                // saturer sur demande le feedback (c'est drole)        
                 echo->bufferL[echo->write_index] = input_sampleL + output_sampleL*feedback;
                 echo->bufferR[echo->write_index] = input_sampleR + output_sampleR*feedback;
         
